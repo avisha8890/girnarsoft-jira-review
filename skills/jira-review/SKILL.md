@@ -5,7 +5,7 @@ argument-hint: "[ticket-key]"
 disable-model-invocation: true
 background: false
 effort: high
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(git *) Read Grep Glob AskUserQuestion
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py *) Bash(git *) Read Grep Glob AskUserQuestion Artifact
 ---
 
 # Jira code review
@@ -127,6 +127,7 @@ stop:
 
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh <KEY> @.review/<KEY>-blocked.txt
+python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py --mark-start <KEY>
 ```
 
 ```
@@ -147,8 +148,9 @@ once the above is on the ticket.
 
 List only the items actually missing. The "possibly related" block comes from the
 remaining `pull_requests[]` (Bitbucket search by key) and `branches[]` (git) — offer
-them as hints, never use them as the source of the review. Then tell the user what was
-posted and stop. Do not collect a diff, do not post the "started" comment, do not
+them as hints, never use them as the source of the review. Then record the blocked run
+in the ledger (step 6: verdict `BLOCKED`, outcome `blocked`), tell the user what was
+posted, and stop. Do not collect a diff, do not post the "started" comment, do not
 transition the ticket.
 
 **When both are present**, the source branch is the one the ticket names and the target
@@ -174,7 +176,11 @@ never `origin/HEAD`. Pass it explicitly when the PR targets something else. This
 
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh <KEY> @.review/<KEY>-started.txt
+python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py --mark-start <KEY>
 ```
+
+The second line stamps the review's start time for the ledger (step 6); run it even if
+the comment failed.
 
 The comment is short and factual — it lets the author and QA see the ticket is in hand:
 
@@ -304,6 +310,34 @@ In both modes:
 Never approve or decline the PR, and never move a ticket anywhere other than the
 configured QA status (PASS) or rework transition (FAIL) — anything else is the human
 reviewer's call.
+
+### 6. Record the run in the ledger — every run, every outcome
+
+Every execution of this skill, on every machine, writes one record to the same ledger
+page so the team can see the agent's throughput and turnaround. The page and its store
+are fixed in `${CLAUDE_SKILL_DIR}/tracking.json` (`artifact_url`, `collection`) — never
+substitute another URL. This step is not optional and needs no confirmation: it writes
+to the review store, not to Jira or the PR.
+
+1. Build the record — after step 5 has finished (or right after the blocked comment):
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py <KEY> --verdict <PASS|FAIL|BLOCKED> --outcome <qa_handoff|rework|posted|report_only|blocked> [--posted pr,jira] [--blocked-missing "branch name,PR link"]
+   ```
+   `--outcome` is what actually happened in step 5: `qa_handoff` / `rework` when the
+   handoff script ran, `posted` when findings were posted but the ticket was not moved,
+   `report_only` when the user chose not to post, `blocked` for step-1 blocks.
+   `--posted` lists where the findings went. The script prints `doc_id=<id> file=<path>`.
+2. Write it with the Artifact tool — `action: "write_db"`, `db_op: "set"`,
+   `url` = `artifact_url` from `tracking.json`, `collection` = its `collection`,
+   `doc_id` and `file_path` from the script's output line.
+3. Tell the user the run is recorded, with the ledger URL. If the write fails (no access
+   to the artifact, quota), say so and keep `.review/<KEY>-run.json` — it can be written
+   later with the same call.
+
+The record carries the ticket (key, type, priority, summary), reviewer, developer, PR,
+start/finish/duration, verdict, finding counts, diff size, a size-based complexity score
+and the outcome. Iteration numbers and time-to-PASS are computed by the page from all
+runs on the same key.
 
 ## Failure modes
 

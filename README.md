@@ -68,6 +68,20 @@ PASS, and the `Needs Re-Work` transition (Stories) or a plain `Dev In Progress` 
 (Sub-tasks) for a FAIL. Adjust `qa_path` / `rework_targets` per project; both scripts take
 `--dry-run`.
 
+## The ledger
+
+Every run — pass, fail or blocked — records itself on one shared page:
+
+**https://claude.ai/code/artifact/f4af8e7b-658e-43d4-95a8-776e7d276211**
+
+Per ticket: type, priority, complexity, how many review iterations, time to PASS, who
+reviewed and who developed. Per run: start time, duration, verdict, finding counts, diff
+size, outcome and links to the PR and ticket. The URL is fixed in
+`skills/jira-review/tracking.json`; the skill's step 6 writes the record through the
+Artifact tool, so no extra credentials are needed. The page keeps its data in the
+artifact's own store, which means it is organisation-internal: sign in to claude.ai
+with a Girnarsoft account to view it or to have your runs recorded.
+
 ## Layout
 
 ```
@@ -75,7 +89,8 @@ PASS, and the `Needs Re-Work` transition (Stories) or a plain `Dev In Progress` 
 .claude-plugin/marketplace.json     marketplace manifest (this repo is its own marketplace)
 skills/jira-review/SKILL.md         the skill
 skills/jira-review/scripts/         fetch_review_tickets.py, collect_diff.sh, jira_comment.sh,
-                                    post_pr_comment.sh, jira_handoff.sh
+                                    post_pr_comment.sh, jira_handoff.sh, record_run.py
+skills/jira-review/tracking.json    the ledger page every run records to
 skills/jira-review/references/      review-checklist.md, report-template.md
 examples/                           jira-project.json, jira.env templates
 ```
