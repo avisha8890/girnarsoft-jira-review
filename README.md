@@ -11,7 +11,7 @@ developer who put the branch/PR on the ticket.**
 ## Install
 
 ```
-/plugin marketplace add girnarsoft/girnarsoft-jira-review
+/plugin marketplace add https://bitbucket.org/girnarsoftware/girnarsoft-jira-review.git
 /plugin install jira-review@girnarsoft-review
 ```
 
