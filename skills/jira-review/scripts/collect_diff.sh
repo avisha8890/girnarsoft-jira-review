@@ -39,8 +39,8 @@ TOP=$(git rev-parse --show-toplevel)
 if [ $# -ge 2 ]; then
   TGT="$2"
 else
-  # The product's base branch is declared per repo; origin/HEAD is only a fallback,
-  # because here it points at master while work merges into dev.
+  # The base branch is declared per repo (git.base_branch); the remote HEAD and the
+  # usual default names are only fallbacks, since many repos merge work somewhere else.
   TGT=""
   if [ -f "$TOP/.claude/jira-project.json" ] && command -v jq >/dev/null 2>&1; then
     TGT=$(jq -r '.git.base_branch // ""' "$TOP/.claude/jira-project.json")

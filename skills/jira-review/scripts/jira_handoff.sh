@@ -6,14 +6,15 @@
 #                        [--target <transition-or-status>]... [--dry-run]
 #
 # Modes (defaults from <repo>/.claude/jira-project.json):
-#   qa      target(s) jira.qa_status (default "In QA"), hop through jira.qa_path
-#           (default ["Dev Complete"]), assign jira.default_qa
-#   rework  target(s) jira.rework_targets (default ["Needs Re-Work", "Dev In Progress"]),
-#           hop through jira.rework_path (default []), assignee REQUIRED (--assignee)
+#   qa      target(s) jira.qa_status, hop through jira.qa_path (default []), assign
+#           jira.default_qa
+#   rework  target(s) jira.rework_targets, hop through jira.rework_path (default []),
+#           assignee REQUIRED (--assignee)
+# All of these come from jira-project.json; there are no built-in status names.
 #
 # A target matches either a transition NAME or the status it leads TO, case-insensitively;
-# targets are tried in order so a workflow that names the move "Needs Re-Work" for one
-# issue type and plain "Dev In Progress" for another is handled by one config. Jira only
+# targets are tried in order so a workflow that names the move differently per issue type
+# (a "rework" transition for one, a plain status move for another) is one config. Jira only
 # exposes moves from the CURRENT status, so when no target is reachable the script hops
 # through the path statuses first. --target may repeat and overrides the config list.
 #
@@ -37,48 +38,22 @@ while [ $# -gt 0 ]; do
 done
 case "$MODE" in qa|rework) ;; *) echo "error: --mode must be qa or rework" >&2; exit 2 ;; esac
 
-TOP=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-PROJECT_JSON="$TOP/.claude/jira-project.json"
-cfg() { [ -f "$PROJECT_JSON" ] && jq -r "$1" "$PROJECT_JSON" 2>/dev/null || true; }
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 if [ "$MODE" = qa ]; then
   [ -z "$ASSIGNEE" ] && ASSIGNEE=$(cfg '.jira.default_qa // empty')
-  [ ${#TARGETS[@]} -eq 0 ] && mapfile -t TARGETS < <(cfg '(.jira.qa_status // "In QA") | if type=="array" then .[] else . end')
-  PATH_STATUSES=$(cfg '(.jira.qa_path // ["Dev Complete"]) | .[]')
-  [ -f "$PROJECT_JSON" ] || { TARGETS=("In QA"); PATH_STATUSES="Dev Complete"; }
+  [ ${#TARGETS[@]} -eq 0 ] && mapfile -t TARGETS < <(cfg '.jira.qa_status // empty | if type=="array" then .[] else . end')
+  PATH_STATUSES=$(cfg '(.jira.qa_path // []) | .[]')
+  [ ${#TARGETS[@]} -gt 0 ] || die "jira.qa_status is not set in $PROJECT_JSON (the status a PASS moves to)"
+  [ -n "$ASSIGNEE" ] || die "jira.default_qa is not set in $PROJECT_JSON (who a PASS is assigned to); or pass --assignee"
 else
-  [ ${#TARGETS[@]} -eq 0 ] && mapfile -t TARGETS < <(cfg '(.jira.rework_targets // ["Needs Re-Work","Dev In Progress"]) | .[]')
+  [ ${#TARGETS[@]} -eq 0 ] && mapfile -t TARGETS < <(cfg '(.jira.rework_targets // []) | .[]')
   PATH_STATUSES=$(cfg '(.jira.rework_path // []) | .[]')
-  [ -f "$PROJECT_JSON" ] || TARGETS=("Needs Re-Work" "Dev In Progress")
-  [ -n "$ASSIGNEE" ] || { echo "error: rework mode needs --assignee <developer> (the person who put the branch/PR on the ticket)" >&2; exit 1; }
-fi
-[ -n "$ASSIGNEE" ] || { echo "error: no assignee -- pass --assignee or set jira.default_qa in $PROJECT_JSON" >&2; exit 1; }
-[ ${#TARGETS[@]} -gt 0 ] || { echo "error: no target transition/status configured" >&2; exit 1; }
-
-ENV_FILE="${JIRA_ENV_FILE:-}"
-[ -z "$ENV_FILE" ] && [ -f "$TOP/.claude/jira.env" ] && ENV_FILE="$TOP/.claude/jira.env"
-[ -z "$ENV_FILE" ] && [ -f "$HOME/.claude/jira.env" ] && ENV_FILE="$HOME/.claude/jira.env"
-if [ -n "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-  set +a
-fi
-: "${JIRA_BASE_URL:=https://jira.girnarsoft.com}"
-JIRA_BASE_URL="${JIRA_BASE_URL%/}"
-if [ -n "${JIRA_TOKEN:-}" ]; then
-  AUTH=(--header "Authorization: Bearer ${JIRA_TOKEN}")
-elif [ -n "${JIRA_USER:-}" ] && [ -n "${JIRA_PASS:-}" ]; then
-  AUTH=(--user "${JIRA_USER}:${JIRA_PASS}")
-else
-  echo "error: no Jira credentials in ${ENV_FILE:-the environment} (JIRA_USER + JIRA_PASS)" >&2
-  exit 1
+  [ ${#TARGETS[@]} -gt 0 ] || die "jira.rework_targets is not set in $PROJECT_JSON (transition names or statuses a FAIL moves to, in order)"
+  [ -n "$ASSIGNEE" ] || die "rework mode needs --assignee <developer> (the person who put the branch/PR on the ticket)"
 fi
 
-api() {  # METHOD PATH [curl args...]
-  local method="$1" path="$2"; shift 2
-  curl --silent --show-error --fail-with-body -4 --connect-timeout 8 --max-time 20 \
-    -X "$method" "${AUTH[@]}" --header "Content-Type: application/json" "$@" "${JIRA_BASE_URL}${path}"
-}
+api() { jira_api "$@"; }
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 current_status() { api GET "/rest/api/2/issue/$KEY?fields=status" | jq -r '.fields.status.name'; }
@@ -118,14 +93,27 @@ pick_transition() {
   return 1
 }
 
-# Resolve the assignee to a Jira username: exact email, then exact username, else sole match.
+# Resolve the assignee to the identifier Jira wants: `name` on Server/Data Center,
+# `accountId` on Cloud. Exact email, then exact username, else the sole match.
 resolve_user() {
-  local json
-  json=$(api GET "/rest/api/2/user/search?username=$(printf '%s' "$ASSIGNEE" | jq -sRr @uri)&maxResults=10")
-  printf '%s' "$json" | jq -r --arg w "$(lc "$ASSIGNEE")" '
-    ([.[] | select((.emailAddress // "" | ascii_downcase) == $w)][0].name)
-    // ([.[] | select((.name // "" | ascii_downcase) == $w)][0].name)
-    // (if length == 1 then .[0].name else empty end) // empty'
+  local json q
+  q=$(printf '%s' "$ASSIGNEE" | jq -sRr @uri)
+  if [ "$JIRA_DEPLOYMENT" = cloud ]; then
+    json=$(api GET "/rest/api/2/user/search?query=$q&maxResults=10")
+    printf '%s' "$json" | jq -r --arg w "$(lc "$ASSIGNEE")" '
+      ([.[] | select((.emailAddress // "" | ascii_downcase) == $w)][0].accountId)
+      // ([.[] | select((.displayName // "" | ascii_downcase) == $w)][0].accountId)
+      // (if length == 1 then .[0].accountId else empty end) // empty'
+  else
+    json=$(api GET "/rest/api/2/user/search?username=$q&maxResults=10")
+    printf '%s' "$json" | jq -r --arg w "$(lc "$ASSIGNEE")" '
+      ([.[] | select((.emailAddress // "" | ascii_downcase) == $w)][0].name)
+      // ([.[] | select((.name // "" | ascii_downcase) == $w)][0].name)
+      // (if length == 1 then .[0].name else empty end) // empty'
+  fi
+}
+assignee_body() {
+  if [ "$JIRA_DEPLOYMENT" = cloud ]; then jq -nc --arg n "$USERNAME" '{accountId: $n}'; else jq -nc --arg n "$USERNAME" '{name: $n}'; fi
 }
 
 STATUS=$(current_status)
@@ -152,13 +140,13 @@ while [ "$DONE" = 0 ] && ! at_target "$STATUS"; do
   api POST "/rest/api/2/issue/$KEY/transitions" --data "$(jq -nc --arg id "$TID" '{transition: {id: $id}}')" >/dev/null \
     || { echo "error: transition '$TNAME' failed on $KEY (workflow may require fields on this step)" >&2; exit 1; }
   echo "moved $KEY: '$STATUS' -> '$TTO' (via '$TNAME')"
-  # a transition whose NAME matched a target (e.g. "Needs Re-Work") is the destination,
+  # a transition whose NAME matched a target is the destination,
   # even though the status it lands on has a different name
   for t in "${TARGETS[@]}"; do [ "$(lc "$t")" = "$(lc "$TNAME")" ] && DONE=1; done
   STATUS=$(current_status); VISITED="$VISITED$(lc "$STATUS")|"; HOPS=$((HOPS+1))
 done
 [ "$HOPS" = 0 ] && echo "$KEY already '$STATUS'"
 
-api PUT "/rest/api/2/issue/$KEY/assignee" --data "$(jq -nc --arg n "$USERNAME" '{name: $n}')" >/dev/null \
+api PUT "/rest/api/2/issue/$KEY/assignee" --data "$(assignee_body)" >/dev/null \
   || { echo "error: assign failed on $KEY -- the user may lack 'Assignable User' permission" >&2; exit 1; }
 echo "assigned $KEY to: $(api GET "/rest/api/2/issue/$KEY?fields=assignee" | jq -r '.fields.assignee.displayName // "unassigned"')"

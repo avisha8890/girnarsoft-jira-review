@@ -16,11 +16,16 @@ something PASS because you did not look at it.
 
 ## Credentials and project facts
 
-Jira and Bitbucket access come from the same `jira.env` the girnarsoft-jira plugin uses:
-`$JIRA_ENV_FILE`, else `<repo>/.claude/jira.env`, else `~/.claude/jira.env`. Keys:
-`JIRA_BASE_URL`, `JIRA_USER` + `JIRA_PASS` (or `JIRA_TOKEN`), `BITBUCKET_EMAIL` +
-`BITBUCKET_API_TOKEN` (or `BITBUCKET_ACCESS_TOKEN`). The Jira project and base branch come
-from `<repo>/.claude/jira-project.json`. Never print a value from that file.
+Credentials come from `jira.env`: `$JIRA_ENV_FILE`, else `<repo>/.claude/jira.env`, else
+`~/.claude/jira.env`. Keys: `JIRA_BASE_URL`, `JIRA_USER` + `JIRA_PASS` (or `JIRA_TOKEN`,
+or `JIRA_EMAIL` + `JIRA_API_TOKEN` on Jira Cloud); for the git host `BITBUCKET_EMAIL` +
+`BITBUCKET_API_TOKEN` (or `BITBUCKET_ACCESS_TOKEN`) on Bitbucket, `GITHUB_TOKEN` on GitHub.
+Everything project-specific — Jira project key, the review status, the QA and rework
+moves, the base branch, the git host — comes from `<repo>/.claude/jira-project.json`;
+the queue output echoes the resolved values (`jira_project`, `review_status`,
+`base_branch`, `git_host`, `product`). Nothing about a particular company, workflow or
+language is built in: if a value is missing the scripts say which key to add. Never
+print a credential.
 
 ## Review queue
 
@@ -33,8 +38,8 @@ The skill runs in one of two modes, decided by whether a ticket key was passed:
 
 | Invocation | Queue | What happens |
 |---|---|---|
-| `/jira-review` | every ticket in the board's **Code Review** column **assigned to the person running this skill** | step 0 lists them and asks which one to review |
-| `/jira-review OLMS-123` | that one ticket, regardless of status or assignee | step 0 is skipped — the key **is** the selection, and the review starts at step 1 |
+| `/jira-review` | every ticket in the configured review status (`jira.review_status`) **assigned to the person running this skill** | step 0 lists them and asks which one to review |
+| `/jira-review PROJ-123` | that one ticket, regardless of status or assignee | step 0 is skipped — the key **is** the selection, and the review starts at step 1 |
 
 ## Standing rules
 
@@ -67,7 +72,8 @@ These apply for the whole task, not just the first response.
 output). Print a one-line header — key, summary, status, branch and PR present/missing —
 and go straight to step 1. Do not ask "Review this one?"; the user already chose by
 typing the key. If the ticket is not in Code Review, or is assigned to someone else, say
-so in that header line and carry on — a key overrides the queue filter on purpose.
+so in that header line and carry on — a key overrides the queue filter on purpose. "Not in
+the review status" means not in `review_status` from the queue output.
 
 **Without a key** (`"mode": "queue"`), print the queue as a table — key, priority,
 summary, author (the assignee), and any PR found — one row per ticket. Then ask with `AskUserQuestion` which ticket to review. One
@@ -75,7 +81,7 @@ option per ticket, the ticket key as the label, the summary as the description. 
 queue holds more than four tickets, offer the four most recently updated and let "Other"
 take a key. Never pick for the user, and never start on a ticket that was not selected.
 
-- Queue empty → say "No tickets in Code Review are assigned to you." and stop.
+- Queue empty → say "No tickets in <review_status> are assigned to you." and stop.
 - In the table, mark each ticket's branch and PR as present or **missing** — the user
   should see before choosing that a ticket will be blocked.
 - The user may answer the question with a key that is not in the list ("Other"); fetch
@@ -109,7 +115,7 @@ and both come from the queue output:
 | Required | Where it comes from | Queue field |
 |---|---|---|
 | Branch name | a `Branch:` / `PWA branch:` / `API branch:` line in a comment or the description | `ticket_branches[]` |
-| PR link | a `https://bitbucket.org/.../pull-requests/<id>` URL in a comment or the description | `ticket_pr_ids[]` |
+| PR link | the PR's URL on the repository's git host (`.../pull-requests/<id>` on Bitbucket, `.../pull/<id>` on GitHub) in a comment or the description | `ticket_pr_ids[]` |
 
 **The latest comment wins.** Developers re-post the branch when they re-cut it and the PR
 when they raise a new one, so `ticket_branches[]` comes from the most recent comment that
@@ -135,7 +141,7 @@ Code review cannot start — required information is missing on the ticket.
 
 Missing:
   - Branch name      (add a comment: "Branch: <branch-name>")
-  - PR link          (add a comment: "PR: https://bitbucket.org/girnarsoftware/<repo>/pull-requests/<id>")
+  - PR link          (add a comment: "PR: <the pull request's URL on the git host>")
 
 <Only when the fallbacks found something:>
 Possibly related, found by searching — please confirm by adding it to the ticket:
@@ -147,7 +153,7 @@ once the above is on the ticket.
 ```
 
 List only the items actually missing. The "possibly related" block comes from the
-remaining `pull_requests[]` (Bitbucket search by key) and `branches[]` (git) — offer
+remaining `pull_requests[]` (git-host search by key) and `branches[]` (git) — offer
 them as hints, never use them as the source of the review. Then record the blocked run
 in the ledger (step 6: verdict `BLOCKED`, outcome `blocked`), tell the user what was
 posted, and stop. Do not collect a diff, do not post the "started" comment, do not
@@ -166,8 +172,8 @@ Then collect the diff:
 bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh <source-branch> [target-branch]
 ```
 
-The target defaults to `git.base_branch` from `.claude/jira-project.json` (`dev` here),
-never `origin/HEAD`. Pass it explicitly when the PR targets something else. This writes
+The target defaults to `git.base_branch` from `.claude/jira-project.json` (echoed as
+`base_branch` in the queue output), never the remote HEAD. Pass it explicitly when the PR targets something else. This writes
 `meta.txt`, `stat.txt`, `files.txt`, `full.patch`, and `context.txt` into `.review/`
 (gitignored). It diffs from the merge base, so you see only what this branch did.
 
@@ -264,12 +270,14 @@ Follow `references/report-template.md`. Write to `.review/<TICKET-KEY>-review.md
 ### 5. Offer to post, then move the ticket on
 
 Ask first, always, naming exactly where the comment will land and what the ticket move
-will be: on PASS "move to In QA and assign <QA person>", on FAIL "send back with
-Needs Re-Work and assign <developer display name> (<source>)". One `AskUserQuestion`,
+will be: on PASS "move to <jira.qa_status> and assign <jira.default_qa>", on FAIL "move
+via <jira.rework_targets> and assign <developer display name> (<source>)" — use the
+configured names, never assume a workflow. One `AskUserQuestion`,
 whose options spell out what each choice writes — include a "post only, do not move"
 option and a "do nothing" option. On confirmation:
 
-- **Bitbucket PR comment** (preferred — the author sees it in the PR):
+- **PR comment on the git host** (preferred — the author sees it in the PR; the script
+  detects Bitbucket or GitHub from the remote, or `git.host`):
   `bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh <pr-id> <summary.md>`
   Write the summary to a file in `.review/` first: verdict line, counts, the BLOCKER and
   MAJOR findings with `file:line`, and the "Not verified" list. Not the whole report.
@@ -278,30 +286,31 @@ option and a "do nothing" option. On confirmation:
   (convert the Markdown summary to Jira wiki markup first: `##` → `h2.`, `**x**` → `*x*`,
   backticks → `{{x}}`).
 
-- **QA handoff — only when the verdict is PASS and the ticket is currently in
-  Code Review:**
+- **QA handoff — only when the verdict is PASS and the ticket is currently in the
+  review status:**
   `bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh <KEY>`
-  This walks the workflow to `jira.qa_status` from `.claude/jira-project.json` (default
-  "In QA"; Code Review has no direct move, so it hops through `jira.qa_path`, default
-  Dev Complete) and assigns `jira.default_qa`. Run the findings comment **before** the
+  This walks the workflow to `jira.qa_status` from `.claude/jira-project.json`, hopping
+  through `jira.qa_path` when the review status has no direct move, and assigns
+  `jira.default_qa`. Both keys are required; the script names the missing one. Run the
+  findings comment **before** the
   handoff so QA finds the review on the ticket. Show the script's output to the user
   verbatim — it names every hop and the final assignee.
-- **Rework handback — only when the verdict is FAIL and the ticket is currently in
-  Code Review:**
+- **Rework handback — only when the verdict is FAIL and the ticket is currently in the
+  review status:**
   `bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh <KEY> --mode rework --assignee <developer.name>`
   `<developer.name>` is the `developer.name` field of the ticket in the queue output —
   the author of the comment that put the branch/PR on the ticket, falling back to the
-  assignee. The script tries `jira.rework_targets` in order (default the "Needs Re-Work"
-  transition, then a plain "Dev In Progress" move — Sub-tasks in this workflow only have
-  the latter). Post the findings comment **first** so the developer finds the reasons on
-  the ticket. Show the script's output verbatim.
+  assignee. The script tries `jira.rework_targets` in order — each entry is a transition
+  name or a status, so a workflow that names the move differently per issue type is one
+  list. Post the findings comment **first** so the developer finds the reasons on the
+  ticket. Show the script's output verbatim.
   - `developer` is null in the queue output → do not guess; post the findings and tell
     the user the handback needs a name.
 
 In both modes:
 
-- The ticket is not in Code Review (already In QA, or reviewed by key from another
-  column) → skip the move and say why. A key overrides the queue filter for
+- The ticket is not in the review status (already past it, or reviewed by key from
+  another column) → skip the move and say why. A key overrides the queue filter for
   *reviewing*, not for moving tickets someone else owns.
 - The script fails (missing transition, permission) → report its error and stop; the
   findings are already posted, nothing needs undoing.
@@ -315,8 +324,9 @@ reviewer's call.
 
 Every execution of this skill, on every machine, writes one record to the same ledger
 page so the team can see the agent's throughput and turnaround. The page and its store
-are fixed in `${CLAUDE_SKILL_DIR}/tracking.json` (`artifact_url`, `collection`) — never
-substitute another URL. This step is not optional and needs no confirmation: it writes
+come from `tracking.artifact_url` / `tracking.collection` in the repo's
+`.claude/jira-project.json` when set, else `${CLAUDE_SKILL_DIR}/tracking.json` — the
+script's output line names the one to use; never substitute another URL. This step is not optional and needs no confirmation: it writes
 to the review store, not to Jira or the PR.
 
 1. Build the record — after step 5 has finished (or right after the blocked comment):
@@ -326,10 +336,10 @@ to the review store, not to Jira or the PR.
    `--outcome` is what actually happened in step 5: `qa_handoff` / `rework` when the
    handoff script ran, `posted` when findings were posted but the ticket was not moved,
    `report_only` when the user chose not to post, `blocked` for step-1 blocks.
-   `--posted` lists where the findings went. The script prints `doc_id=<id> file=<path>`.
-2. Write it with the Artifact tool — `action: "write_db"`, `db_op: "set"`,
-   `url` = `artifact_url` from `tracking.json`, `collection` = its `collection`,
-   `doc_id` and `file_path` from the script's output line.
+   `--posted` lists where the findings went. The script prints
+   `doc_id=<id> file=<path> url=<ledger> collection=<name>`.
+2. Write it with the Artifact tool — `action: "write_db"`, `db_op: "set"`, and `url`,
+   `collection`, `doc_id`, `file_path` all taken from that output line.
 3. Tell the user the run is recorded, with the ledger URL. If the write fails (no access
    to the artifact, quota), say so and keep `.review/<KEY>-run.json` — it can be written
    later with the same call.

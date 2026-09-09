@@ -10,7 +10,7 @@ write_db (collection "reviews"). Two modes:
   python3 record_run.py KEY --verdict PASS|FAIL|BLOCKED --outcome OUTCOME
                         [--posted pr,jira] [--blocked-missing "branch name,PR link"]
                         [--counts B,M,m,W,U] [--ticket-json FILE] [--out FILE]
-      writes .review/KEY-run.json and prints "doc_id=<id> file=<path>"
+      writes .review/KEY-run.json and prints "doc_id=<id> file=<path> url=<ledger> collection=<name>"
 
 Outcome values: qa_handoff | rework | posted | report_only | blocked.
 Verdict and counts default to what .review/KEY-review.md says ("## Verdict: X" and the
@@ -160,6 +160,8 @@ def main():
     record = {
         "key": t["key"], "jira_url": t.get("url"), "summary": t.get("summary"),
         "type": t.get("type"), "priority": t.get("priority"), "project": data.get("jira_project"),
+        "product": data.get("product") or data.get("jira_project"),
+        "repo": data.get("repo"), "git_host": data.get("git_host"),
         "status_at_start": t.get("status"),
         "reviewer": (data.get("reviewer") or {}).get("display_name"),
         "developer": dev.get("display_name"),
@@ -182,7 +184,25 @@ def main():
     doc_id = f"{key}-{started.strftime('%Y%m%dT%H%M%SZ')}"
     out = Path(args.out) if args.out else review_dir / f"{key}-run.json"
     out.write_text(json.dumps(record, indent=2) + "\n")
-    print(f"doc_id={doc_id} file={out}")
+    tracking = ledger_target()
+    print(f"doc_id={doc_id} file={out} url={tracking.get('artifact_url', '')} collection={tracking.get('collection', 'reviews')}")
+
+
+def ledger_target():
+    """Where the record goes: tracking.artifact_url in the repo's jira-project.json wins,
+    else the skill's own tracking.json (one ledger shared by every project that installs
+    this plugin)."""
+    cfg = {}
+    pj = repo_top() / ".claude" / "jira-project.json"
+    if pj.exists():
+        try:
+            cfg = (json.loads(pj.read_text()).get("tracking") or {})
+        except json.JSONDecodeError:
+            cfg = {}
+    skill = HERE.parent / "tracking.json"
+    base = json.loads(skill.read_text()) if skill.exists() else {}
+    return {"artifact_url": cfg.get("artifact_url") or base.get("artifact_url", ""),
+            "collection": cfg.get("collection") or base.get("collection", "reviews")}
 
 
 if __name__ == "__main__":

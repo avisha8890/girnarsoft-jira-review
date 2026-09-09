@@ -1,14 +1,22 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "girnarsoft-review",
-  "description": "Girnarsoft code-review plugin for Claude Code: review the PR on a Jira ticket and move the ticket on.",
-  "owner": { "name": "Girnarsoft" },
+  "description": "Code-review plugin for Claude Code: review the PR on a Jira ticket and move the ticket on. Configured per repository.",
+  "owner": {
+    "name": "Girnarsoft"
+  },
   "plugins": [
     {
       "name": "jira-review",
       "source": "./",
-      "description": "Review the PR on a Jira ticket against a 28-point checklist; QA handoff on PASS, rework handback on FAIL.",
-      "keywords": ["jira", "code-review", "bitbucket", "qa"]
+      "description": "Review the PR on a Jira ticket against a 28-point checklist; QA handoff on PASS, rework handback on FAIL; per-repo config, any Jira workflow, Bitbucket or GitHub.",
+      "keywords": [
+        "jira",
+        "code-review",
+        "bitbucket",
+        "github",
+        "qa"
+      ]
     }
   ]
 }

@@ -1,14 +1,25 @@
 {
-  "product": "One LMS",
+  "product": "<product name shown on the ledger, e.g. Payments API>",
   "jira": {
-    "project": "OLMS",
-    "default_qa": "qa.person@girnarsoft.com",
-    "qa_status": "In QA",
-    "qa_path": ["Dev Complete"],
-    "rework_targets": ["Needs Re-Work", "Dev In Progress"],
+    "base_url": "https://jira.example.com",
+    "project": "<PROJECT KEY, e.g. PAY>",
+    "review_status": "<status that means waiting for code review, e.g. Code Review>",
+    "deployment": "<server | cloud — omit to infer from the URL>",
+    "default_qa": "<QA person's Jira username or email>",
+    "qa_status": "<status a PASS moves to, e.g. In QA>",
+    "qa_path": ["<intermediate statuses when there is no direct move, in order; [] if none>"],
+    "rework_targets": ["<transition name or status a FAIL moves to>", "<next fallback, tried in order>"],
     "rework_path": []
   },
   "git": {
-    "base_branch": "dev"
+    "base_branch": "<branch PRs target, e.g. main or develop>",
+    "host": "<bitbucket | github — omit to infer from the remote>",
+    "remote": "origin",
+    "api_base": "<only for a self-hosted instance; omit for bitbucket.org / github.com>",
+    "protected_branches": ["<branch names never taken as a feature branch; base_branch is always excluded>"]
+  },
+  "tracking": {
+    "artifact_url": "<omit to use the plugin's shared ledger; set to point this repo at a different ledger page>",
+    "collection": "reviews"
   }
 }

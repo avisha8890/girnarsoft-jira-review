@@ -1,31 +1,42 @@
 #!/usr/bin/env python3
 """
-Fetch the Jira tickets currently sitting in the code-review stage for the user running
-this command, and resolve the Bitbucket pull request(s) attached to each.
+Fetch the Jira tickets sitting in the code-review status for the user running this
+command, and resolve the pull request(s) attached to each on the repository's git host
+(Bitbucket Cloud or GitHub).
 
-Credentials come from the same jira.env the girnarsoft-jira plugin uses. Resolution order:
+Credentials come from a jira.env file. Resolution order:
 
   1. $JIRA_ENV_FILE                       explicit override
-  2. <git toplevel>/.claude/jira.env      per-repo file (this repository)
+  2. <git toplevel>/.claude/jira.env      per-repo file
   3. ~/.claude/jira.env                   shared file
 
 Variables already exported in the shell win over the file. Keys read:
 
-  JIRA_BASE_URL         default https://jira.girnarsoft.com
+  JIRA_BASE_URL         Jira URL (or jira.base_url in jira-project.json)
   JIRA_USER + JIRA_PASS basic auth (Jira Server / Data Center)
   JIRA_TOKEN            bearer PAT -- wins over user/pass when set
-  BITBUCKET_EMAIL + BITBUCKET_API_TOKEN   basic auth for api.bitbucket.org
-  BITBUCKET_ACCESS_TOKEN                  bearer -- wins over email/token when set
+  JIRA_EMAIL + JIRA_API_TOKEN             basic auth (Jira Cloud)
+  BITBUCKET_EMAIL + BITBUCKET_API_TOKEN   Bitbucket Cloud basic auth
+  BITBUCKET_ACCESS_TOKEN                  Bitbucket bearer -- wins when set
+  GITHUB_TOKEN (or GH_TOKEN)              GitHub token
   JIRA_REVIEW_JQL       override the default queue query (optional)
 
-The Jira project and base branch come from <git toplevel>/.claude/jira-project.json
-(jira.project, git.base_branch) so the queue is scoped to this product.
+Everything project-specific comes from <git toplevel>/.claude/jira-project.json:
+  jira.project          project key the queue is scoped to           (required)
+  jira.review_status    the status that means "waiting for review"   (required)
+  jira.base_url         Jira URL when not in the environment
+  jira.deployment       "server" | "cloud" (inferred from the URL when absent)
+  git.base_branch       branch PRs target                             (required)
+  git.host              "bitbucket" | "github" (inferred from the remote when absent)
+  git.remote            remote name, default "origin"
+  git.api_base          API base for a self-hosted instance (optional)
+  git.protected_branches  names never taken as a feature branch (base_branch always is)
 
 Usage:
   python3 fetch_review_tickets.py
   python3 fetch_review_tickets.py --json
-  python3 fetch_review_tickets.py --ticket OLMS-1234
-  python3 fetch_review_tickets.py --jql "project = OLMS AND status = 'Code Review'"
+  python3 fetch_review_tickets.py --ticket PROJ-1234
+  python3 fetch_review_tickets.py --jql "project = PROJ AND status = 'In Review'"
 """
 
 import argparse
@@ -39,14 +50,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# The board column that means "waiting for a code review". The queue is every ticket in
-# this status assigned to the person running the skill -- nothing else.
-REVIEW_STATUS = "Code Review"
-
 FIELDS = "summary,description,status,assignee,reporter,priority,issuetype,labels,updated,created,comment"
 COMMENT_MAX_CHARS = 3000
 TIMEOUT = 30
-BB_API = "https://api.bitbucket.org/2.0"
+HOST_API_DEFAULTS = {"bitbucket": "https://api.bitbucket.org/2.0", "github": "https://api.github.com"}
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +123,29 @@ def load_project_config():
 ENV_FILE = find_env_file()
 load_env_file(ENV_FILE)
 PROJECT = load_project_config()
-JIRA_PROJECT = (PROJECT.get("jira") or {}).get("project", "")
-BASE_BRANCH = (PROJECT.get("git") or {}).get("base_branch", "")
+JIRA_CFG = PROJECT.get("jira") or {}
+GIT_CFG = PROJECT.get("git") or {}
+JIRA_PROJECT = JIRA_CFG.get("project", "")
+REVIEW_STATUS = JIRA_CFG.get("review_status", "")
+BASE_BRANCH = GIT_CFG.get("base_branch", "")
+PRODUCT = PROJECT.get("product", "")
+GIT_REMOTE = GIT_CFG.get("remote") or "origin"
+PROTECTED = {b.lower() for b in (GIT_CFG.get("protected_branches") or [])} | ({BASE_BRANCH.lower()} if BASE_BRANCH else set())
+if JIRA_CFG.get("base_url") and not os.environ.get("JIRA_BASE_URL"):
+    os.environ["JIRA_BASE_URL"] = JIRA_CFG["base_url"]
+
+
+def jira_deployment():
+    d = (JIRA_CFG.get("deployment") or "").lower()
+    if d in ("server", "cloud"):
+        return d
+    return "cloud" if ".atlassian.net" in os.environ.get("JIRA_BASE_URL", "") else "server"
+
+
+def user_ident(user):
+    """The identifier assignment needs: `name` on Server/DC, `accountId` on Cloud."""
+    user = user or {}
+    return user.get("accountId") if jira_deployment() == "cloud" else user.get("name")
 
 
 def env(name, required=True):
@@ -158,14 +186,43 @@ def jira_auth_header():
     )
 
 
-def bitbucket_auth_header():
-    token = os.environ.get("BITBUCKET_ACCESS_TOKEN", "").strip()
-    if token:
-        return f"Bearer {token}"
-    email = os.environ.get("BITBUCKET_EMAIL", "").strip()
-    api_token = os.environ.get("BITBUCKET_API_TOKEN", "").strip()
-    if email and api_token:
-        return basic(email, api_token)
+def remote_url():
+    try:
+        out = subprocess.run(["git", "remote", "get-url", GIT_REMOTE], capture_output=True, text=True,
+                             check=True, timeout=10)
+        return out.stdout.strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def git_host():
+    h = (GIT_CFG.get("host") or "").lower()
+    if h:
+        return h
+    url = remote_url()
+    if "bitbucket.org" in url:
+        return "bitbucket"
+    if "github.com" in url:
+        return "github"
+    return ""
+
+
+def host_api_base():
+    return (GIT_CFG.get("api_base") or HOST_API_DEFAULTS.get(git_host(), "")).rstrip("/")
+
+
+def host_auth_header():
+    host = git_host()
+    if host == "bitbucket":
+        token = os.environ.get("BITBUCKET_ACCESS_TOKEN", "").strip()
+        if token:
+            return f"Bearer {token}"
+        email = os.environ.get("BITBUCKET_EMAIL", "").strip()
+        api_token = os.environ.get("BITBUCKET_API_TOKEN", "").strip()
+        return basic(email, api_token) if email and api_token else ""
+    if host == "github":
+        token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+        return f"Bearer {token}" if token else ""
     return ""
 
 
@@ -234,6 +291,9 @@ def default_jql():
     override = os.environ.get("JIRA_REVIEW_JQL", "").strip()
     if override:
         return override
+    if not REVIEW_STATUS:
+        sys.exit("error: jira.review_status is not set in .claude/jira-project.json "
+                 "(the status that means 'waiting for code review'), and no JIRA_REVIEW_JQL override is set")
     scope = f"project = {JIRA_PROJECT} AND " if JIRA_PROJECT else ""
     return (
         f'{scope}status = "{REVIEW_STATUS}" '
@@ -254,14 +314,15 @@ def default_jql():
 BRANCH_LINE = re.compile(
     r"(?im)^\s*(?:[*#\-]+\s*)?(?:[A-Za-z]+\s+)?branch(?:\s*name)?\s*[:\-]\s*(?:\{\{|[`'\"*_])*([A-Za-z0-9._/\-]+)"
 )
-PR_URL = re.compile(r"https?://bitbucket\.org/[^/\s]+/[^/\s]+/pull-requests/(\d+)")
+# Bitbucket ".../pull-requests/<id>", GitHub ".../pull/<id>", GitLab ".../merge_requests/<id>"
+PR_URL = re.compile(r"https?://[^\s/]+/[^\s]*?/(?:pull-requests|pull|merge_requests)/(\d+)")
 
 
 def references_in(text):
     branches, prs = [], []
     for m in BRANCH_LINE.finditer(text or ""):
         name = m.group(1).rstrip(".,;)*_")
-        if name.lower() not in ("dev", "master", "main") and name not in branches:
+        if name.lower() not in PROTECTED and name not in branches:
             branches.append(name)
     for m in PR_URL.finditer(text or ""):
         pid = int(m.group(1))
@@ -342,7 +403,7 @@ def comments_of(fields):
         body = flatten_description(c.get("body")).strip()
         out.append({
             "author": (c.get("author") or {}).get("displayName"),
-            "author_name": (c.get("author") or {}).get("name"),
+            "author_name": user_ident(c.get("author")),
             "created": c.get("created"),
             "body": body[:COMMENT_MAX_CHARS] + (" ...[truncated]" if len(body) > COMMENT_MAX_CHARS else ""),
         })
@@ -350,33 +411,32 @@ def comments_of(fields):
 
 
 # ---------------------------------------------------------------------------
-# Bitbucket
+# Git host: Bitbucket Cloud or GitHub, chosen by git.host or the remote URL
 # ---------------------------------------------------------------------------
 
 def repo_slug():
-    """workspace/repo from the origin remote, with any embedded credentials dropped."""
-    try:
-        out = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    """owner/repo (workspace/repo) from the remote, credentials and .git stripped."""
+    url = remote_url()
+    if not url:
         return ""
-    remote = out.stdout.strip()
-    m = re.search(r"bitbucket\.org[:/](?:[^/]+/)?([^/]+/[^/]+?)(?:\.git)?$", remote)
-    if not m:
-        return ""
-    slug = m.group(1)
-    # https://user:token@bitbucket.org/ws/repo.git -> the regex above already skipped the
-    # userinfo because it sits before "bitbucket.org"; guard against ws being the token.
-    return slug
+    url = re.sub(r"^[a-z]+://", "", url)
+    url = re.sub(r"^[^@/]+@", "", url)
+    url = re.sub(r"^[^:/]+[:/]", "", url)
+    url = re.sub(r"\.git$", "", url).strip("/")
+    return url if url.count("/") == 1 else ""
 
 
 def shape_pr(pr):
+    host = git_host()
+    if host == "github":
+        state = "MERGED" if pr.get("merged_at") else ("OPEN" if pr.get("state") == "open" else "DECLINED")
+        return {
+            "id": pr.get("number"), "title": pr.get("title"), "state": state,
+            "source": (pr.get("head") or {}).get("ref"), "destination": (pr.get("base") or {}).get("ref"),
+            "author": (pr.get("user") or {}).get("login"), "url": pr.get("html_url"), "updated": pr.get("updated_at"),
+        }
     return {
-        "id": pr.get("id"),
-        "title": pr.get("title"),
-        "state": pr.get("state"),
+        "id": pr.get("id"), "title": pr.get("title"), "state": pr.get("state"),
         "source": ((pr.get("source") or {}).get("branch") or {}).get("name"),
         "destination": ((pr.get("destination") or {}).get("branch") or {}).get("name"),
         "author": (pr.get("author") or {}).get("display_name"),
@@ -385,52 +445,71 @@ def shape_pr(pr):
     }
 
 
-def bitbucket_ready():
-    auth = bitbucket_auth_header()
+def host_ready():
+    host = git_host()
+    auth = host_auth_header()
     slug = repo_slug()
+    if not host:
+        return None, None, f"PR lookup skipped: cannot tell the git host from remote '{GIT_REMOTE}' -- set git.host"
+    if host not in HOST_API_DEFAULTS:
+        return None, None, f"PR lookup skipped: unsupported git host '{host}' (bitbucket, github)"
     if not auth:
-        return None, None, "bitbucket lookup skipped: no BITBUCKET_* credentials"
+        return None, None, f"PR lookup skipped: no {host} credentials in {ENV_FILE or 'the environment'}"
     if not slug:
-        return None, None, "bitbucket lookup skipped: origin is not a bitbucket.org remote"
+        return None, None, f"PR lookup skipped: cannot read owner/repo from remote '{GIT_REMOTE}'"
     return auth, slug, ""
 
 
-def bitbucket_pr_by_id(pr_id):
-    auth, slug, note = bitbucket_ready()
+def host_pr_by_id(pr_id):
+    auth, slug, note = host_ready()
     if note:
         return None
-    return shape_pr(http_get(f"{BB_API}/repositories/{slug}/pullrequests/{pr_id}", auth, what="Bitbucket"))
+    base = host_api_base()
+    if git_host() == "github":
+        return shape_pr(http_get(f"{base}/repos/{slug}/pulls/{pr_id}", auth, what="GitHub"))
+    return shape_pr(http_get(f"{base}/repositories/{slug}/pullrequests/{pr_id}", auth, what="Bitbucket"))
 
 
-def bitbucket_prs_for_branches(branches):
+def host_prs_for_branches(branches):
     """PRs whose source branch is one the ticket names."""
-    auth, slug, note = bitbucket_ready()
+    auth, slug, note = host_ready()
     if note or not branches:
         return []
+    base = host_api_base()
     found = []
     for b in branches:
-        data = http_get(
-            f"{BB_API}/repositories/{slug}/pullrequests", auth,
-            {"q": f'source.branch.name = "{b}"', "pagelen": 10, "state": ["OPEN", "MERGED", "DECLINED"]},
-            what="Bitbucket",
-        )
-        found.extend(shape_pr(pr) for pr in data.get("values", []))
+        if git_host() == "github":
+            owner = slug.split("/")[0]
+            data = http_get(f"{base}/repos/{slug}/pulls", auth, {"head": f"{owner}:{b}", "state": "all", "per_page": 10},
+                            what="GitHub")
+            found.extend(shape_pr(pr) for pr in data)
+        else:
+            data = http_get(f"{base}/repositories/{slug}/pullrequests", auth,
+                            {"q": f'source.branch.name = "{b}"', "pagelen": 10, "state": ["OPEN", "MERGED", "DECLINED"]},
+                            what="Bitbucket")
+            found.extend(shape_pr(pr) for pr in data.get("values", []))
     return found
 
 
-def bitbucket_prs(key):
-    """Open PRs whose source branch or title mentions the ticket key; merged ones as fallback."""
-    auth, slug, note = bitbucket_ready()
+def host_prs(key):
+    """PRs whose source branch or title mentions the ticket key -- a hint, never the source."""
+    auth, slug, note = host_ready()
     if note:
         return {"prs": [], "note": note}
-    q = f'(source.branch.name ~ "{key}" OR title ~ "{key}")'
+    base = host_api_base()
     found = []
+    if git_host() == "github":
+        data = http_get(f"{base}/search/issues", auth, {"q": f"repo:{slug} is:pr {key} in:title", "per_page": 20},
+                        what="GitHub")
+        for item in data.get("items", []):
+            pr = host_pr_by_id(item.get("number"))
+            if pr:
+                found.append(pr)
+        return {"prs": found, "note": ""}
+    q = f'(source.branch.name ~ "{key}" OR title ~ "{key}")'
     for state in ("OPEN", "MERGED", "DECLINED"):
-        data = http_get(
-            f"{BB_API}/repositories/{slug}/pullrequests", auth,
-            {"q": f'{q} AND state = "{state}"', "pagelen": 20},
-            what="Bitbucket",
-        )
+        data = http_get(f"{base}/repositories/{slug}/pullrequests", auth,
+                        {"q": f'{q} AND state = "{state}"', "pagelen": 20}, what="Bitbucket")
         found.extend(shape_pr(pr) for pr in data.get("values", []))
         if found and state == "OPEN":
             break
@@ -466,7 +545,7 @@ def shape(issue, with_dev=True):
         "type": (f.get("issuetype") or {}).get("name"),
         "priority": (f.get("priority") or {}).get("name"),
         "assignee": (f.get("assignee") or {}).get("displayName"),
-        "assignee_name": (f.get("assignee") or {}).get("name"),
+        "assignee_name": user_ident(f.get("assignee")),
         "reporter": (f.get("reporter") or {}).get("displayName"),
         "labels": f.get("labels", []),
         "updated": f.get("updated"),
@@ -489,10 +568,10 @@ def shape(issue, with_dev=True):
                 prs.append(pr)
 
         for pid in rec["ticket_pr_ids"]:                                    # 1. PR linked on the ticket
-            add(bitbucket_pr_by_id(pid))
-        for pr in bitbucket_prs_for_branches(rec["ticket_branches"]):   # 2. PR for the named branch
+            add(host_pr_by_id(pid))
+        for pr in host_prs_for_branches(rec["ticket_branches"]):   # 2. PR for the named branch
             add(pr)
-        bb = bitbucket_prs(key)                               # 3. PR mentioning the key
+        bb = host_prs(key)                               # 3. PR mentioning the key
         for pr in bb["prs"]:
             add(pr)
         rec["pull_requests"] = prs
@@ -568,6 +647,10 @@ def main():
         print(json.dumps({
             "mode": "ticket" if ticket else "queue",
             "count": len(tickets),
+            "product": PRODUCT or (repo_slug().split("/")[-1] if repo_slug() else ""),
+            "repo": repo_slug(),
+            "git_host": git_host(),
+            "review_status": REVIEW_STATUS,
             "reviewer": reviewer,
             "env_file": ENV_FILE,
             "jira_project": JIRA_PROJECT,

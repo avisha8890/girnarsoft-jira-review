@@ -1,9 +1,18 @@
 {
   "name": "jira-review",
-  "description": "Rigorous, technology-independent code review of the pull request attached to a Jira ticket: 28-point checklist over the diff, PASS/FAIL report with severities, findings posted to Bitbucket and Jira, QA handoff on PASS and rework handback on FAIL.",
-  "author": { "name": "Girnarsoft" },
+  "description": "Rigorous, technology-independent code review of the pull request attached to a Jira ticket: 28-point checklist over the diff, PASS/FAIL report with severities, findings posted to the PR (Bitbucket or GitHub) and to Jira, QA handoff on PASS and rework handback on FAIL, every run recorded on a shared ledger. All workflow names, hosts and people come from each repository's .claude/jira-project.json.",
+  "author": {
+    "name": "Girnarsoft"
+  },
   "repository": "https://github.com/avisha8890/girnarsoft-jira-review",
   "license": "UNLICENSED",
-  "keywords": ["jira", "code-review", "bitbucket", "qa", "workflow"],
+  "keywords": [
+    "jira",
+    "code-review",
+    "bitbucket",
+    "github",
+    "qa",
+    "workflow"
+  ],
   "skills": "./skills"
 }
