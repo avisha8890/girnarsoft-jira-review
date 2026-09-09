@@ -45,7 +45,9 @@
   .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
   .num { font-variant-numeric: tabular-nums; }
 
-  .page { max-width: 1240px; margin: 0 auto; padding: 28px 24px 56px; display: grid; gap: 22px; }
+  .page { max-width: 1400px; margin: 0 auto; padding: clamp(18px, 3vw, 36px) clamp(16px, 4vw, 48px) 56px; display: grid; gap: 22px; }
+  /* grid items default to min-width:auto, so a wide table would stretch the whole column past the viewport */
+  .page > * { min-width: 0; }
 
   /* header */
   .masthead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; border-bottom: 1px solid var(--line-2); padding-bottom: 16px; }
@@ -102,10 +104,19 @@
   /* tables */
   .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  td.wrap, td.people { white-space: normal; }
+  td.people { min-width: 150px; }
+  .sub { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: normal; line-height: 1.35; }
+  .sub a { color: var(--accent); }
+  .lab { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
+  td.r .sub { white-space: nowrap; }
+  td.mono .sub { font-family: "IBM Plex Sans", sans-serif; }
+  @media (max-width: 960px) { .col-opt { display: none; } }
+  @media (max-width: 640px) { .col-opt2 { display: none; } .kpi .value { font-size: 24px; } }
   th { font: 500 11px/1.2 "IBM Plex Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); position: sticky; top: 0; }
   tbody tr:last-child td { border-bottom: 0; }
-  td.wrap { white-space: normal; min-width: 240px; max-width: 420px; }
+  td.wrap { min-width: 220px; max-width: 460px; }
   td.r, th.r { text-align: right; }
   .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .section-title h2 { font: 600 17px/1.2 Archivo, sans-serif; margin: 0; }
@@ -134,7 +145,8 @@
   .tip[hidden] { display: none; }
   .tip b { font-weight: 500; }
 
-  .method { font-size: 12px; color: var(--ink-2); max-width: 78ch; border-top: 1px solid var(--line-2); padding-top: 14px; }
+  .method { font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--line-2); padding-top: 14px; }
+  .method dl { max-width: 90ch; }
   .method dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0 0; }
   .method dt { font-family: "IBM Plex Mono", monospace; color: var(--muted); }
   .method dd { margin: 0; }
@@ -187,12 +199,12 @@
   </section>
 
   <section>
-    <div class="section-title"><h2>Tickets</h2><span class="meta">One row per ticket · iterations = review runs on it · review time = all runs added up · time to PASS from first run to the passing one</span></div>
+    <div class="section-title"><h2>Tickets</h2><span class="meta">One row per ticket · review time adds up every run · time to PASS runs from the first review to the passing one</span></div>
     <div class="tablewrap" style="margin-top:10px">
       <table id="tickets">
         <thead><tr>
-          <th>Ticket</th><th>Project</th><th>Summary</th><th>Type</th><th>Priority</th><th>Complexity</th>
-          <th class="r">Iterations</th><th class="r">Review time</th><th>First review</th><th>Latest verdict</th><th class="r">Time to PASS</th><th>Reviewer</th><th>Developer</th>
+          <th>Ticket</th><th>Summary</th><th>Type</th><th class="col-opt">Complexity</th>
+          <th class="r">Iterations</th><th class="r">Review time</th><th class="r">Time to PASS</th><th>Latest verdict</th><th class="col-opt2">People</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -200,12 +212,12 @@
   </section>
 
   <section>
-    <div class="section-title"><h2>Runs</h2><span class="meta">Newest first · review time = start comment → findings posted · findings as blockers / major / minor / warnings / unverified</span></div>
+    <div class="section-title"><h2>Runs</h2><span class="meta">Newest first · findings as blockers / major / minor / warnings / unverified</span></div>
     <div class="tablewrap" style="margin-top:10px">
       <table id="runs">
         <thead><tr>
-          <th>Started</th><th>Ticket</th><th class="r">#</th><th>Type</th><th>Reviewer</th><th>Developer</th>
-          <th class="r">Review time</th><th>Verdict</th><th>Findings</th><th>Change</th><th>Outcome</th><th>Links</th>
+          <th>Started</th><th>Ticket</th><th class="r">#</th><th>Type</th><th class="col-opt2">People</th>
+          <th class="r">Review time</th><th>Verdict</th><th class="col-opt">Findings</th><th class="col-opt">Change</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -390,48 +402,48 @@
   const pill = v => el("span", { class: `pill ${v || "open"}`, text: v || "open" });
   const link = (href, text) => href ? el("a", { href, target: "_blank", rel: "noopener", text }) : document.createTextNode(text);
 
+  const sub = (...parts) => { const n = el("span", { class: "sub" }); parts.forEach(x => x != null && n.append(x)); return n; };
+  const lab = t => el("span", { class: "lab", text: t });
+  const ticketCell = (key, url, product, extra) => el("td", { class: "mono" }, link(url, key), sub(product || "", extra ? " · " : null, extra));
+  const peopleCell = (reviewer, developer) => el("td", { class: "people" },
+    el("span", {}, lab("rev"), document.createTextNode(reviewer || "—")), sub(lab("dev"), developer || "—"));
+
   function renderTickets(tk) {
     const tb = $("#tickets tbody"); tb.replaceChildren();
-    if (!tk.length) { tb.append(el("tr", {}, el("td", { colspan: 13, class: "empty", text: "No tickets in this window." }))); return; }
+    if (!tk.length) { tb.append(el("tr", {}, el("td", { colspan: 9, class: "empty", text: "No tickets in this window." }))); return; }
     for (const t of tk) tb.append(el("tr", {},
-      el("td", { class: "mono" }, link(t.jira_url, t.key)),
-      el("td", { text: t.product || "—", title: t.repo || "" }),
+      ticketCell(t.key, t.jira_url, t.product, null),
       el("td", { class: "wrap", text: t.summary || "" }),
-      el("td", {}, typeCell(t.type)),
-      el("td", { text: t.priority || "—" }),
-      el("td", {}, t.complexity ? el("span", { class: `cx ${t.complexity.label}`, title: t.complexity.basis, text: `${t.complexity.label} · ${t.complexity.score}` }) : el("span", { class: "muted", text: "—" })),
-      el("td", { class: "r iter", text: t.iterations }),
+      el("td", {}, typeCell(t.type), sub(t.priority || "")),
+      el("td", { class: "col-opt" }, t.complexity ? el("span", { class: `cx ${t.complexity.label}`, title: t.complexity.basis, text: `${t.complexity.label} · ${t.complexity.score}` }) : el("span", { class: "muted", text: "—" })),
+      el("td", { class: "r iter" }, document.createTextNode(t.iterations), sub("first " + fmtDay(t.first).replace(/ (\d{2})$/, " ’$1"))),
       el("td", { class: "r num", text: fmtDur(t.reviewTime) }),
-      el("td", { class: "num", text: fmtDay(t.first) }),
-      el("td", {}, pill(t.lastVerdict), document.createTextNode(" "), el("span", { class: "muted", text: OUTCOME[t.lastOutcome] || "" })),
       el("td", { class: "r num" }, t.timeToPass == null ? el("span", { class: "muted", text: "open" }) : document.createTextNode(fmtDur(t.timeToPass))),
-      el("td", { text: t.reviewers.join(", ") || "—" }),
-      el("td", { text: t.developer || "—" })));
+      el("td", {}, pill(t.lastVerdict), sub(OUTCOME[t.lastOutcome] || "")),
+      Object.assign(peopleCell(t.reviewers.join(", "), t.developer), { className: "people col-opt2" })));
   }
   function renderRuns(runs) {
     const tb = $("#runs tbody"); tb.replaceChildren();
     const rows = [...runs].sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
-    if (!rows.length) { tb.append(el("tr", {}, el("td", { colspan: 12, class: "empty", text: "No runs in this window." }))); return; }
+    if (!rows.length) { tb.append(el("tr", {}, el("td", { colspan: 9, class: "empty", text: "No runs in this window." }))); return; }
     for (const r of rows) {
       const c = r.counts || {}, ch = r.change || {};
       const findings = el("span", { class: "findings" });
       findings.append(c.blocker ? el("b", { text: c.blocker }) : document.createTextNode(c.blocker ?? 0), " / ", c.major ? el("b", { text: c.major }) : document.createTextNode(c.major ?? 0), ` / ${c.minor ?? 0} / ${c.warn ?? 0} / ${c.unverified ?? 0}`);
       const links = el("span", {});
-      if (r.pr_url) links.append(link(r.pr_url, `PR #${r.pr_id}`), " ");
+      if (r.pr_url) links.append(link(r.pr_url, `PR #${r.pr_id}`), " · ");
       links.append(link(r.jira_url, "Jira"));
+      const d = new Date(r.started_at);
       tb.append(el("tr", {},
-        el("td", { class: "num", text: fmtWhen(r.started_at) }),
-        el("td", { class: "mono" }, link(r.jira_url, r.key)),
+        el("td", { class: "num" }, document.createTextNode(isNaN(d) ? "—" : d.toLocaleDateString(undefined, { day: "2-digit", month: "short" })), sub(isNaN(d) ? "" : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }))),
+        ticketCell(r.key, r.jira_url, r.product, links),
         el("td", { class: "r iter", text: `${r._iter}/${r._iters}` }),
-        el("td", {}, typeCell(r.type)),
-        el("td", { text: r.reviewer || "—" }),
-        el("td", { text: r.developer || "—" }),
+        el("td", {}, typeCell(r.type), sub(r.priority || "")),
+        Object.assign(peopleCell(r.reviewer, r.developer), { className: "people col-opt2" }),
         el("td", { class: "r num", text: fmtDur(r.duration_sec) }),
-        el("td", {}, pill(r.verdict)),
-        el("td", {}, r.verdict === "BLOCKED" ? el("span", { class: "muted", text: (r.blocked_missing || []).join(", ") || "—" }) : findings),
-        el("td", { class: "mono", text: r.verdict === "BLOCKED" ? "—" : `${ch.files ?? 0} files +${ch.added ?? 0} −${ch.removed ?? 0}` }),
-        el("td", { text: OUTCOME[r.outcome] || r.outcome || "—" }),
-        el("td", {}, links)));
+        el("td", {}, pill(r.verdict), sub(OUTCOME[r.outcome] || r.outcome || "")),
+        el("td", { class: "col-opt" }, r.verdict === "BLOCKED" ? el("span", { class: "muted", text: "missing: " + ((r.blocked_missing || []).join(", ") || "—") }) : findings),
+        el("td", { class: "mono col-opt", text: r.verdict === "BLOCKED" ? "—" : `${ch.files ?? 0} files +${ch.added ?? 0} −${ch.removed ?? 0}` })));
     }
   }
 
