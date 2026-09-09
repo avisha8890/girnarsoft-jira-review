@@ -1,0 +1,14 @@
+{
+  "product": "One LMS",
+  "jira": {
+    "project": "OLMS",
+    "default_qa": "qa.person@girnarsoft.com",
+    "qa_status": "In QA",
+    "qa_path": ["Dev Complete"],
+    "rework_targets": ["Needs Re-Work", "Dev In Progress"],
+    "rework_path": []
+  },
+  "git": {
+    "base_branch": "dev"
+  }
+}

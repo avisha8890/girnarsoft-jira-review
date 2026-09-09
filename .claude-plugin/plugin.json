@@ -1,0 +1,9 @@
+{
+  "name": "jira-review",
+  "description": "Rigorous, technology-independent code review of the pull request attached to a Jira ticket: 28-point checklist over the diff, PASS/FAIL report with severities, findings posted to Bitbucket and Jira, QA handoff on PASS and rework handback on FAIL.",
+  "author": { "name": "Girnarsoft" },
+  "repository": "https://github.com/girnarsoft/girnarsoft-jira-review",
+  "license": "UNLICENSED",
+  "keywords": ["jira", "code-review", "bitbucket", "qa", "workflow"],
+  "skills": "./skills"
+}

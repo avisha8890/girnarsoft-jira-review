@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.review/
+.claude/jira.env
