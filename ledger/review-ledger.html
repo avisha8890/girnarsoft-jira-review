@@ -1,0 +1,487 @@
+<title>Review Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f6f8; --surface: #ffffff; --surface-2: #eceff3;
+    --ink: #1a2330; --ink-2: #4b5867; --muted: #7a8794; --line: #dde3e9; --line-2: #c9d1d9;
+    --accent: #1b6e80; --accent-soft: #d9ecf0; --accent-ink: #ffffff;
+    --pass: #0ca30c; --fail: #d03b3b; --blocked: #fab219;
+    --pass-soft: #e3f5e3; --fail-soft: #fae4e4; --blocked-soft: #fdf0d0;
+    --s-story: #2a78d6; --s-bug: #eb6834; --s-task: #1baf7a; --s-sub: #eda100; --s-other: #8a949e;
+    --shadow: 0 1px 2px rgba(20, 30, 40, .06), 0 4px 16px rgba(20, 30, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0f151b; --surface: #161e27; --surface-2: #1d2733;
+      --ink: #e8edf2; --ink-2: #b3bec9; --muted: #7f8b97; --line: #26313c; --line-2: #34414e;
+      --accent: #4fb3c5; --accent-soft: #163640; --accent-ink: #0b1216;
+      --pass-soft: #12301a; --fail-soft: #3a1717; --blocked-soft: #3a2c0c;
+      --s-story: #3987e5; --s-bug: #d95926; --s-task: #199e70; --s-sub: #c98500; --s-other: #6b7680;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f151b; --surface: #161e27; --surface-2: #1d2733;
+    --ink: #e8edf2; --ink-2: #b3bec9; --muted: #7f8b97; --line: #26313c; --line-2: #34414e;
+    --accent: #4fb3c5; --accent-soft: #163640; --accent-ink: #0b1216;
+    --pass-soft: #12301a; --fail-soft: #3a1717; --blocked-soft: #3a2c0c;
+    --s-story: #3987e5; --s-bug: #d95926; --s-task: #199e70; --s-sub: #c98500; --s-other: #6b7680;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 400 14px/1.5 "IBM Plex Sans", "Segoe UI", Roboto, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .page { max-width: 1240px; margin: 0 auto; padding: 28px 24px 56px; display: grid; gap: 22px; }
+
+  /* header */
+  .masthead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; border-bottom: 1px solid var(--line-2); padding-bottom: 16px; }
+  .masthead h1 { font: 700 30px/1.05 Archivo, "IBM Plex Sans", sans-serif; letter-spacing: -.01em; margin: 0; text-wrap: balance; }
+  .masthead .sub { color: var(--ink-2); margin: 6px 0 0; max-width: 62ch; }
+  .eyebrow { font: 500 11px/1 "IBM Plex Mono", monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+  .source { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line-2); border-radius: 999px; font-size: 12px; color: var(--ink-2); background: var(--surface); }
+  .source .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .source.live .dot { background: var(--pass); }
+  .source.off .dot { background: var(--blocked); }
+
+  .notice { background: var(--blocked-soft); border: 1px solid var(--blocked); border-radius: 6px; padding: 10px 14px; font-size: 13px; color: var(--ink); }
+  .notice[hidden] { display: none; }
+
+  /* filters */
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+  .filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+  .filters select { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; background: var(--surface); }
+  .seg button { font: inherit; font-size: 12px; padding: 5px 10px; border: 0; background: transparent; color: var(--ink-2); cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .filters .count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+  /* KPI tiles */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px 12px; display: grid; gap: 4px; }
+  .kpi .label { font-size: 12px; color: var(--ink-2); }
+  .kpi .value { font: 700 28px/1 Archivo, sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .kpi .value small { font: 500 13px/1 "IBM Plex Sans", sans-serif; color: var(--muted); margin-left: 4px; }
+  .kpi .hint { font-size: 11px; color: var(--muted); }
+
+  /* panels */
+  .panels { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; }
+  @media (max-width: 880px) { .panels { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px 14px; box-shadow: var(--shadow); min-width: 0; }
+  .panel h2 { font: 600 15px/1.2 Archivo, sans-serif; margin: 0; }
+  .panel .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .panel .head .meta { font-size: 12px; color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .chart { width: 100%; overflow: visible; display: block; }
+  .chart text { font-family: "IBM Plex Sans", sans-serif; font-size: 11px; fill: var(--ink-2); }
+  .chart text.key { font-family: "IBM Plex Mono", monospace; fill: var(--ink); }
+  .chart text.val { font-family: "IBM Plex Mono", monospace; fill: var(--ink-2); }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .chart .axis { stroke: var(--line-2); stroke-width: 1; }
+  .chart .bar { rx: 0; }
+  .chart .hit { fill: transparent; cursor: default; }
+  .chart .hit:hover + .bar, .chart .bar.hot { filter: brightness(1.12); }
+  .empty { color: var(--muted); font-size: 13px; padding: 22px 0; text-align: center; }
+
+  /* tables */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { font: 500 11px/1.2 "IBM Plex Mono", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); position: sticky; top: 0; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.wrap { white-space: normal; min-width: 240px; max-width: 420px; }
+  td.r, th.r { text-align: right; }
+  .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .section-title h2 { font: 600 17px/1.2 Archivo, sans-serif; margin: 0; }
+  .section-title .meta { font-size: 12px; color: var(--muted); }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; border-radius: 999px; font: 500 11px/1.4 "IBM Plex Mono", monospace; letter-spacing: .04em; border: 1px solid transparent; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.PASS { color: var(--pass); background: var(--pass-soft); }
+  .pill.FAIL { color: var(--fail); background: var(--fail-soft); }
+  .pill.BLOCKED { color: #8a5a00; background: var(--blocked-soft); }
+  :root[data-theme="dark"] .pill.BLOCKED { color: var(--blocked); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.BLOCKED { color: var(--blocked); } }
+  .pill.open { color: var(--ink-2); background: var(--surface-2); }
+  .type { display: inline-flex; align-items: center; gap: 6px; }
+  .type i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .cx { display: inline-block; min-width: 56px; padding: 1px 6px; border-radius: 4px; font-size: 12px; text-align: center; border: 1px solid var(--line-2); }
+  .cx.Low { border-color: var(--line-2); }
+  .cx.Medium { border-color: var(--accent); color: var(--accent); }
+  .cx.High { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .findings { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-2); }
+  .findings b { color: var(--fail); font-weight: 500; }
+  .iter { font-family: "IBM Plex Mono", monospace; }
+  .muted { color: var(--muted); }
+
+  .tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: var(--bg); padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; box-shadow: var(--shadow); max-width: 320px; }
+  .tip[hidden] { display: none; }
+  .tip b { font-weight: 500; }
+
+  .method { font-size: 12px; color: var(--ink-2); max-width: 78ch; border-top: 1px solid var(--line-2); padding-top: 14px; }
+  .method dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0 0; }
+  .method dt { font-family: "IBM Plex Mono", monospace; color: var(--muted); }
+  .method dd { margin: 0; }
+  @media (prefers-reduced-motion: no-preference) { .chart .bar { transition: filter .12s; } }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Code review agent · all projects</p>
+      <h1>Review Ledger</h1>
+      <p class="sub">Every run of the code-review agent across every project that reports here: which ticket, who reviewed, how long it took, what it found, and where the ticket went next.</p>
+    </div>
+    <div class="source" id="source"><span class="dot"></span><span id="sourceText">Connecting to the review store…</span></div>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <span class="seg" id="window" aria-label="Time window">
+      <button type="button" data-days="7">7 days</button>
+      <button type="button" data-days="30" aria-pressed="true">30 days</button>
+      <button type="button" data-days="90">90 days</button>
+      <button type="button" data-days="0">All</button>
+    </span>
+    <label>Project <select id="fProject"><option value="">All</option></select></label>
+    <label>Type <select id="fType"><option value="">All</option></select></label>
+    <label>Verdict <select id="fVerdict"><option value="">All</option><option>PASS</option><option>FAIL</option><option>BLOCKED</option></select></label>
+    <label>Reviewer <select id="fReviewer"><option value="">All</option></select></label>
+    <span class="count" id="count"></span>
+  </div>
+
+  <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+  <section class="panels">
+    <div class="panel">
+      <div class="head"><h2>Review time per run</h2><span class="meta" id="durMeta"></span></div>
+      <svg class="chart" id="durChart" role="img" aria-label="Review duration per run"></svg>
+      <div class="legend" id="typeLegend"></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h2>Verdicts by issue type</h2><span class="meta" id="verMeta"></span></div>
+      <svg class="chart" id="verChart" role="img" aria-label="Verdict counts per issue type"></svg>
+      <div class="legend">
+        <span><i style="background:var(--pass)"></i>PASS</span>
+        <span><i style="background:var(--fail)"></i>FAIL</span>
+        <span><i style="background:var(--blocked)"></i>BLOCKED</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title"><h2>Tickets</h2><span class="meta">One row per ticket · iterations = review runs on it · review time = all runs added up · time to PASS from first run to the passing one</span></div>
+    <div class="tablewrap" style="margin-top:10px">
+      <table id="tickets">
+        <thead><tr>
+          <th>Ticket</th><th>Project</th><th>Summary</th><th>Type</th><th>Priority</th><th>Complexity</th>
+          <th class="r">Iterations</th><th class="r">Review time</th><th>First review</th><th>Latest verdict</th><th class="r">Time to PASS</th><th>Reviewer</th><th>Developer</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title"><h2>Runs</h2><span class="meta">Newest first · review time = start comment → findings posted · findings as blockers / major / minor / warnings / unverified</span></div>
+    <div class="tablewrap" style="margin-top:10px">
+      <table id="runs">
+        <thead><tr>
+          <th>Started</th><th>Ticket</th><th class="r">#</th><th>Type</th><th>Reviewer</th><th>Developer</th>
+          <th class="r">Review time</th><th>Verdict</th><th>Findings</th><th>Change</th><th>Outcome</th><th>Links</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="method">
+    <strong>How the numbers are made.</strong> Each run is written by the review skill when it finishes; nothing here is edited by hand.
+    <dl>
+      <dt>review time</dt><dd>per run: from the "review started" comment on the ticket to the findings being posted (or the blocked comment); per ticket: every run on it added up</dd>
+      <dt>iteration</dt><dd>the run's position among all runs on the same ticket, oldest first</dd>
+      <dt>time to PASS</dt><dd>first run started → the PASS run finished; "open" until a PASS exists</dd>
+      <dt>complexity</dt><dd>size of the diff, not the review: lines (&lt;100 = 1, &lt;400 = 2, &lt;1000 = 3, else 4) + files (≥3 +1, ≥10 +2) + more than one module (+1) + Bug type (+1). Low ≤ 2, Medium 3–4, High ≥ 5. Blocked runs have no diff and no score.</dd>
+      <dt>outcome</dt><dd>qa handoff · rework (sent back) · posted (findings only) · report only · blocked (branch or PR missing)</dd>
+      <dt>project</dt><dd>the product name from each repository's <code>jira-project.json</code>, else its Jira project key; one ledger serves every repository that reports to it</dd>
+    </dl>
+  </footer>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s, r = document) => r.querySelector(s);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = tag.includes(":") ? document.createElementNS("http://www.w3.org/2000/svg", tag.split(":")[1]) : document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) { if (k === "text") n.textContent = v; else if (v != null) n.setAttribute(k, v); }
+    for (const k of kids) if (k != null) n.append(k);
+    return n;
+  };
+  const TYPE_ORDER = ["Story", "Bug", "Task", "Sub-task"];
+  const TYPE_VAR = { Story: "--s-story", Bug: "--s-bug", Task: "--s-task", "Sub-task": "--s-sub" };
+  const typeKey = t => { t = String(t || ""); if (/bug/i.test(t)) return "Bug"; if (/sub/i.test(t)) return "Sub-task"; if (/story/i.test(t)) return "Story"; if (/task/i.test(t)) return "Task"; return "Other"; };
+  const typeColor = t => `var(${TYPE_VAR[typeKey(t)] || "--s-other"})`;
+  const VERDICT_VAR = { PASS: "--pass", FAIL: "--fail", BLOCKED: "--blocked" };
+  const fmtDur = s => { s = Math.max(0, Math.round(s || 0)); if (s < 60) return s + "s"; const m = Math.floor(s / 60); if (m < 60) return m + "m " + String(s % 60).padStart(2, "0") + "s"; const h = Math.floor(m / 60); if (h < 48) return h + "h " + String(m % 60).padStart(2, "0") + "m"; return (h / 24).toFixed(1) + "d"; };
+  const fmtWhen = iso => { if (!iso) return "—"; const d = new Date(iso); return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }); };
+  const fmtDay = iso => iso ? new Date(iso).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "2-digit" }) : "—";
+  const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const OUTCOME = { qa_handoff: "→ QA", rework: "→ rework", posted: "posted", report_only: "report only", blocked: "blocked" };
+
+  // ---- state
+  let all = [];            // raw run records
+  let live = false;
+  const f = { days: 30, project: "", type: "", verdict: "", reviewer: "" };
+
+  // ---- derive
+  function enrich(runs) {
+    const byKey = new Map();
+    for (const r of [...runs].sort((a, b) => (a.started_at || "").localeCompare(b.started_at || ""))) {
+      const list = byKey.get(r.key) || []; list.push(r); byKey.set(r.key, list);
+    }
+    for (const list of byKey.values()) list.forEach((r, i) => { r._iter = i + 1; r._iters = list.length; });
+    return byKey;
+  }
+  function tickets(byKey) {
+    const out = [];
+    for (const [key, list] of byKey) {
+      const first = list[0], last = list[list.length - 1];
+      const pass = list.find(r => r.verdict === "PASS");
+      const reviewers = [...new Set(list.map(r => r.reviewer).filter(Boolean))];
+      const withDiff = list.filter(r => r.complexity);
+      out.push({ key, summary: last.summary, type: last.type, priority: last.priority, jira_url: last.jira_url, product: last.product || last.project || "", repo: last.repo || "",
+        complexity: withDiff.length ? withDiff[withDiff.length - 1].complexity : null,
+        iterations: list.length, reviewTime: list.reduce((a, r) => a + (r.duration_sec || 0), 0), first: first.started_at, lastVerdict: last.verdict, lastOutcome: last.outcome,
+        timeToPass: pass ? (new Date(pass.finished_at) - new Date(first.started_at)) / 1000 : null,
+        reviewers, developer: last.developer, lastStart: last.started_at });
+    }
+    return out.sort((a, b) => (b.lastStart || "").localeCompare(a.lastStart || ""));
+  }
+  function filtered() {
+    const since = f.days ? Date.now() - f.days * 864e5 : 0;
+    return all.filter(r => (!since || new Date(r.started_at).getTime() >= since)
+      && (!f.project || (r.product || r.project) === f.project)
+      && (!f.type || typeKey(r.type) === f.type)
+      && (!f.verdict || r.verdict === f.verdict)
+      && (!f.reviewer || r.reviewer === f.reviewer));
+  }
+
+  // ---- render
+  function render() {
+    const runs = filtered();
+    enrich(all);                        // iteration numbers use the whole history
+    const tk = tickets(enrich(runs));   // aggregates use the filtered set
+    $("#count").textContent = runs.length ? `${runs.length} run${runs.length === 1 ? "" : "s"} · ${tk.length} ticket${tk.length === 1 ? "" : "s"}` : "no runs match";
+    renderKpis(runs, tk);
+    renderDurChart(runs);
+    renderVerdictChart(runs);
+    renderTickets(tk);
+    renderRuns(runs);
+  }
+
+  function kpi(label, value, unit, hint) {
+    return el("div", { class: "kpi" }, el("div", { class: "label", text: label }),
+      el("div", { class: "value" }, document.createTextNode(value), unit ? el("small", { text: unit }) : null),
+      el("div", { class: "hint", text: hint || "" }));
+  }
+  function renderKpis(runs, tk) {
+    const done = runs.filter(r => r.verdict !== "BLOCKED");
+    const passes = done.filter(r => r.verdict === "PASS").length;
+    const blocked = runs.length - done.length;
+    const medDur = median(done.map(r => r.duration_sec || 0));
+    const ttp = tk.filter(t => t.timeToPass != null).map(t => t.timeToPass);
+    const iters = tk.map(t => t.iterations);
+    const k = $("#kpis"); k.replaceChildren(
+      kpi("Reviews run", runs.length, "", blocked ? `${blocked} blocked` : "none blocked"),
+      kpi("Tickets reviewed", tk.length, "", `${tk.filter(t => t.lastVerdict === "PASS").length} passed so far`),
+      kpi("Pass rate", done.length ? Math.round(100 * passes / done.length) : "—", done.length ? "%" : "", `${passes} of ${done.length} completed reviews`),
+      kpi("Median review time", medDur == null ? "—" : fmtDur(medDur), "", "start comment → findings posted"),
+      kpi("Median time to PASS", ttp.length ? fmtDur(median(ttp)) : "—", "", ttp.length ? `${ttp.length} ticket${ttp.length === 1 ? "" : "s"} reached PASS` : "no ticket has passed yet"),
+      kpi("Iterations per ticket", iters.length ? (iters.reduce((a, b) => a + b, 0) / iters.length).toFixed(1) : "—", "", `max ${iters.length ? Math.max(...iters) : 0}`)
+    );
+  }
+
+  function tipOn(node, html) {
+    const tip = $("#tip");
+    node.addEventListener("mousemove", e => { tip.innerHTML = html; tip.hidden = false; const x = Math.min(e.clientX + 14, innerWidth - 340), y = e.clientY + 14; tip.style.left = x + "px"; tip.style.top = y + "px"; });
+    node.addEventListener("mouseleave", () => { tip.hidden = true; });
+  }
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  function renderDurChart(runs) {
+    const svg = $("#durChart"); svg.replaceChildren();
+    const rows = [...runs].sort((a, b) => (b.started_at || "").localeCompare(a.started_at || "")).slice(0, 25);
+    $("#durMeta").textContent = rows.length ? `latest ${rows.length} of ${runs.length}` : "";
+    const legend = $("#typeLegend"); legend.replaceChildren(...TYPE_ORDER.filter(t => runs.some(r => typeKey(r.type) === t)).map(t => el("span", {}, el("i", { style: `background:${typeColor(t)}` }), t)));
+    if (!rows.length) { svg.setAttribute("viewBox", "0 0 600 60"); svg.append(el("svg:text", { x: 300, y: 36, "text-anchor": "middle", text: "No runs in this window" })); return; }
+    const W = 640, L = 132, R = 64, rowH = 22, T = 18, H = T + rows.length * rowH + 22;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const max = Math.max(60, ...rows.map(r => r.duration_sec || 0));
+    const nice = niceStep(max); const top = Math.ceil(max / nice) * nice;
+    const x = v => L + (W - L - R) * v / top;
+    for (let v = 0; v <= top; v += nice) {
+      svg.append(el("svg:line", { class: "grid", x1: x(v), x2: x(v), y1: T - 4, y2: H - 20 }));
+      svg.append(el("svg:text", { x: x(v), y: H - 6, "text-anchor": "middle", text: fmtDur(v) }));
+    }
+    svg.append(el("svg:line", { class: "axis", x1: L, x2: L, y1: T - 4, y2: H - 20 }));
+    rows.forEach((r, i) => {
+      const y = T + i * rowH, w = Math.max(2, x(r.duration_sec || 0) - L);
+      const g = el("svg:g");
+      g.append(el("svg:text", { class: "key", x: L - 8, y: y + 14, "text-anchor": "end", text: `${r.key} #${r._iter}` }));
+      const bar = el("svg:rect", { class: "bar", x: L, y: y + 4, width: w, height: rowH - 8, rx: 3, fill: typeColor(r.type) });
+      if (r.verdict === "BLOCKED") bar.setAttribute("opacity", ".45");
+      g.append(bar);
+      g.append(el("svg:text", { class: "val", x: L + w + 6, y: y + 14, text: fmtDur(r.duration_sec) }));
+      const hit = el("svg:rect", { class: "hit", x: 0, y, width: W, height: rowH });
+      tipOn(hit, `<b>${esc(r.key)}</b> · run ${r._iter} of ${r._iters} · ${esc(r.type)}${r.product ? " · " + esc(r.product) : ""}<br>${esc(r.summary)}<br>${esc(r.reviewer)} · ${fmtWhen(r.started_at)} · ${fmtDur(r.duration_sec)} · <b>${esc(r.verdict)}</b>`);
+      hit.addEventListener("mouseenter", () => bar.classList.add("hot")); hit.addEventListener("mouseleave", () => bar.classList.remove("hot"));
+      g.append(hit); svg.append(g);
+    });
+  }
+  function niceStep(max) { const raw = max / 4; const p = Math.pow(10, Math.floor(Math.log10(raw))); for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p; return 10 * p; }
+
+  function renderVerdictChart(runs) {
+    const svg = $("#verChart"); svg.replaceChildren();
+    const types = TYPE_ORDER.concat("Other").filter(t => runs.some(r => typeKey(r.type) === t));
+    $("#verMeta").textContent = runs.length ? `${runs.length} runs` : "";
+    if (!types.length) { svg.setAttribute("viewBox", "0 0 400 60"); svg.append(el("svg:text", { x: 200, y: 36, "text-anchor": "middle", text: "No runs in this window" })); return; }
+    const W = 420, L = 74, R = 36, rowH = 30, T = 14, H = T + types.length * rowH + 22;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const counts = types.map(t => { const c = { PASS: 0, FAIL: 0, BLOCKED: 0 }; runs.filter(r => typeKey(r.type) === t).forEach(r => { c[r.verdict] = (c[r.verdict] || 0) + 1; }); return c; });
+    const max = Math.max(1, ...counts.map(c => c.PASS + c.FAIL + c.BLOCKED));
+    const step = max <= 5 ? 1 : max <= 10 ? 2 : niceStep(max); const top = Math.ceil(max / step) * step;
+    const x = v => L + (W - L - R) * v / top;
+    for (let v = 0; v <= top; v += step) { svg.append(el("svg:line", { class: "grid", x1: x(v), x2: x(v), y1: T - 4, y2: H - 20 })); svg.append(el("svg:text", { x: x(v), y: H - 6, "text-anchor": "middle", text: v })); }
+    svg.append(el("svg:line", { class: "axis", x1: L, x2: L, y1: T - 4, y2: H - 20 }));
+    types.forEach((t, i) => {
+      const y = T + i * rowH, c = counts[i]; let cur = 0;
+      svg.append(el("svg:text", { class: "key", x: L - 8, y: y + 19, "text-anchor": "end", text: t }));
+      for (const v of ["PASS", "FAIL", "BLOCKED"]) {
+        if (!c[v]) continue;
+        const x0 = x(cur), x1 = x(cur + c[v]); cur += c[v];
+        const seg = el("svg:rect", { class: "bar", x: x0 + (x0 > L ? 2 : 0), y: y + 6, width: Math.max(1, x1 - x0 - (x0 > L ? 2 : 0)), height: rowH - 12, rx: 3, fill: `var(${VERDICT_VAR[v]})` });
+        tipOn(seg, `<b>${t}</b> · ${v}: ${c[v]}`); svg.append(seg);
+        if (x1 - x0 > 26) svg.append(el("svg:text", { x: (x0 + x1) / 2, y: y + 19, "text-anchor": "middle", style: "fill:#fff;font-weight:500", text: c[v] }));
+      }
+      svg.append(el("svg:text", { class: "val", x: x(cur) + 6, y: y + 19, text: cur }));
+    });
+  }
+
+  const typeCell = t => el("span", { class: "type" }, el("i", { style: `background:${typeColor(t)}` }), t || "—");
+  const pill = v => el("span", { class: `pill ${v || "open"}`, text: v || "open" });
+  const link = (href, text) => href ? el("a", { href, target: "_blank", rel: "noopener", text }) : document.createTextNode(text);
+
+  function renderTickets(tk) {
+    const tb = $("#tickets tbody"); tb.replaceChildren();
+    if (!tk.length) { tb.append(el("tr", {}, el("td", { colspan: 13, class: "empty", text: "No tickets in this window." }))); return; }
+    for (const t of tk) tb.append(el("tr", {},
+      el("td", { class: "mono" }, link(t.jira_url, t.key)),
+      el("td", { text: t.product || "—", title: t.repo || "" }),
+      el("td", { class: "wrap", text: t.summary || "" }),
+      el("td", {}, typeCell(t.type)),
+      el("td", { text: t.priority || "—" }),
+      el("td", {}, t.complexity ? el("span", { class: `cx ${t.complexity.label}`, title: t.complexity.basis, text: `${t.complexity.label} · ${t.complexity.score}` }) : el("span", { class: "muted", text: "—" })),
+      el("td", { class: "r iter", text: t.iterations }),
+      el("td", { class: "r num", text: fmtDur(t.reviewTime) }),
+      el("td", { class: "num", text: fmtDay(t.first) }),
+      el("td", {}, pill(t.lastVerdict), document.createTextNode(" "), el("span", { class: "muted", text: OUTCOME[t.lastOutcome] || "" })),
+      el("td", { class: "r num" }, t.timeToPass == null ? el("span", { class: "muted", text: "open" }) : document.createTextNode(fmtDur(t.timeToPass))),
+      el("td", { text: t.reviewers.join(", ") || "—" }),
+      el("td", { text: t.developer || "—" })));
+  }
+  function renderRuns(runs) {
+    const tb = $("#runs tbody"); tb.replaceChildren();
+    const rows = [...runs].sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
+    if (!rows.length) { tb.append(el("tr", {}, el("td", { colspan: 12, class: "empty", text: "No runs in this window." }))); return; }
+    for (const r of rows) {
+      const c = r.counts || {}, ch = r.change || {};
+      const findings = el("span", { class: "findings" });
+      findings.append(c.blocker ? el("b", { text: c.blocker }) : document.createTextNode(c.blocker ?? 0), " / ", c.major ? el("b", { text: c.major }) : document.createTextNode(c.major ?? 0), ` / ${c.minor ?? 0} / ${c.warn ?? 0} / ${c.unverified ?? 0}`);
+      const links = el("span", {});
+      if (r.pr_url) links.append(link(r.pr_url, `PR #${r.pr_id}`), " ");
+      links.append(link(r.jira_url, "Jira"));
+      tb.append(el("tr", {},
+        el("td", { class: "num", text: fmtWhen(r.started_at) }),
+        el("td", { class: "mono" }, link(r.jira_url, r.key)),
+        el("td", { class: "r iter", text: `${r._iter}/${r._iters}` }),
+        el("td", {}, typeCell(r.type)),
+        el("td", { text: r.reviewer || "—" }),
+        el("td", { text: r.developer || "—" }),
+        el("td", { class: "r num", text: fmtDur(r.duration_sec) }),
+        el("td", {}, pill(r.verdict)),
+        el("td", {}, r.verdict === "BLOCKED" ? el("span", { class: "muted", text: (r.blocked_missing || []).join(", ") || "—" }) : findings),
+        el("td", { class: "mono", text: r.verdict === "BLOCKED" ? "—" : `${ch.files ?? 0} files +${ch.added ?? 0} −${ch.removed ?? 0}` }),
+        el("td", { text: OUTCOME[r.outcome] || r.outcome || "—" }),
+        el("td", {}, links)));
+    }
+  }
+
+  // ---- filters
+  function fillSelects() {
+    const types = TYPE_ORDER.concat("Other").filter(t => all.some(r => typeKey(r.type) === t));
+    const fT = $("#fType"); fT.replaceChildren(el("option", { value: "", text: "All" }), ...types.map(t => el("option", { value: t, text: t })));
+    const reviewers = [...new Set(all.map(r => r.reviewer).filter(Boolean))].sort();
+    const fR = $("#fReviewer"); fR.replaceChildren(el("option", { value: "", text: "All" }), ...reviewers.map(t => el("option", { value: t, text: t })));
+    const projects = [...new Set(all.map(r => r.product || r.project).filter(Boolean))].sort();
+    const fP = $("#fProject"); fP.replaceChildren(el("option", { value: "", text: "All" }), ...projects.map(t => el("option", { value: t, text: t })));
+    fT.value = f.type; fR.value = f.reviewer; fP.value = f.project;
+  }
+  $("#window").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; f.days = +b.dataset.days; for (const x of $("#window").children) x.setAttribute("aria-pressed", x === b); render(); });
+  $("#fProject").addEventListener("change", e => { f.project = e.target.value; render(); });
+  $("#fType").addEventListener("change", e => { f.type = e.target.value; render(); });
+  $("#fVerdict").addEventListener("change", e => { f.verdict = e.target.value; render(); });
+  $("#fReviewer").addEventListener("change", e => { f.reviewer = e.target.value; render(); });
+
+  // ---- data source
+  function setSource(state, text) { const s = $("#source"); s.className = "source " + state; $("#sourceText").textContent = text; }
+  const EXAMPLES = [
+    { key: "EX-101", product: "Example product", summary: "Example row — the live store was not reachable in this view", type: "Story", priority: "Medium", reviewer: "Example reviewer", developer: "Example dev", started_at: new Date(Date.now() - 2 * 864e5).toISOString(), finished_at: new Date(Date.now() - 2 * 864e5 + 540e3).toISOString(), duration_sec: 540, verdict: "FAIL", counts: { blocker: 0, major: 1, minor: 2, warn: 1, unverified: 1 }, change: { files: 4, added: 210, removed: 32, commits: 2, modules: ["example-module"] }, complexity: { score: 3, label: "Medium", basis: "example" }, outcome: "rework" },
+    { key: "EX-101", product: "Example product", summary: "Example row — the live store was not reachable in this view", type: "Story", priority: "Medium", reviewer: "Example reviewer", developer: "Example dev", started_at: new Date(Date.now() - 864e5).toISOString(), finished_at: new Date(Date.now() - 864e5 + 300e3).toISOString(), duration_sec: 300, verdict: "PASS", counts: { blocker: 0, major: 0, minor: 1, warn: 0, unverified: 0 }, change: { files: 4, added: 240, removed: 40, commits: 3, modules: ["example-module"] }, complexity: { score: 3, label: "Medium", basis: "example" }, outcome: "qa_handoff" },
+    { key: "EX-102", product: "Example product", summary: "Example row — blocked run, no PR on the ticket", type: "Prod Bug", priority: "High", reviewer: "Example reviewer", developer: "Example dev", started_at: new Date(Date.now() - 3600e3).toISOString(), finished_at: new Date(Date.now() - 3570e3).toISOString(), duration_sec: 30, verdict: "BLOCKED", counts: {}, change: {}, complexity: null, outcome: "blocked", blocked_missing: ["PR link"] },
+  ];
+  function useExamples(reason) {
+    all = EXAMPLES; live = false;
+    setSource("off", "Store unavailable · example rows");
+    const n = $("#notice"); n.textContent = reason; n.hidden = false;
+    fillSelects(); render();
+  }
+
+  (async () => {
+    let db = null;
+    try { db = await (window.claude && window.claude.use ? window.claude.use("db") : Promise.resolve(null)); } catch (e) { db = null; }
+    if (!db) { useExamples("This view cannot reach the review store (open the page from claude.ai, signed in). The rows below are examples, not real runs."); return; }
+    let subscribed = false;
+    const q = db.collection("reviews").orderBy("started_at", "desc").limit(1000);
+    q.onSnapshot(snap => {
+      subscribed = true;
+      all = snap.docs.filter(d => d.exists).map(d => Object.assign({ _id: d.id }, d.data()));
+      live = true;
+      $("#notice").hidden = true;
+      setSource("live", `Live · ${all.length} run${all.length === 1 ? "" : "s"} recorded${snap.metadata.fromCache ? " (syncing)" : ""}`);
+      fillSelects(); render();
+    }, err => {
+      if (!subscribed) useExamples(`The review store could not be read (${err && err.code ? err.code : "error"}). The rows below are examples, not real runs.`);
+      else setSource("off", "Live updates stopped · reload to reconnect");
+    });
+  })();
+})();
+</script>

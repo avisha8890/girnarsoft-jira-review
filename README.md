@@ -110,6 +110,8 @@ skills/jira-review/scripts/         fetch_review_tickets.py, collect_diff.sh, ji
                                     post_pr_comment.sh, jira_handoff.sh, record_run.py
 skills/jira-review/scripts/lib/     common.sh — credentials, Jira URL, git host, API bases
 skills/jira-review/tracking.json    the ledger page every run records to
+ledger/review-ledger.html           the ledger page's source — publish it as a Claude artifact with the
+                                    db capability to run your own, then put its URL in tracking.json
 skills/jira-review/references/      review-checklist.md, report-template.md
 examples/                           jira-project.json, jira.env templates
 ```
