@@ -330,8 +330,36 @@ change — what *this* diff needs, not a copy of the checklist. Eight parts:
 8. **Risk focus** — three to five hotspots specific to this diff, in one line each
    ("the new repository query is not scoped by tenant", "the retry loop has no cap").
 
-Then present the plan to the reviewer and ask with `AskUserQuestion` — question
-"Review plan for <KEY>: proceed, or add points I missed?", two options:
+**Present the plan in the chat as a document, not as a summary.** The reviewer decides
+from what is on screen, so the chat message carries the whole plan, laid out for a
+person who has not read the code and does not know the checklist ids. Rules:
+
+- Use the eight parts above as headings, in order, with the same numbering.
+- Every list of checks is a **table**, one row per check, with four columns: **ID**,
+  **What will be checked** (a full sentence in plain language), **Where** (file and
+  line or file group from the diff), **Why it matters** (the production consequence if
+  it is wrong). This applies to the checklist coverage (part 5 — group rows by theme
+  and give every one of the 28 items its row, with N/A rows saying why), the
+  architecture and approach items (part 4), and every technology-specific check
+  (part 6). A check named only by its id or a two-word label ("Mockito spy idioms",
+  "CSV ragged-row contract") is not presented — spell out what the reviewer would see
+  if it failed.
+- Expectations (part 2) are a table: **#**, **Expectation** (the ticket's words),
+  **Source** (description, or comment author and date).
+- Areas of the diff (part 3) are a table: **Area**, **Files**, **What will be checked**,
+  **Why it matters**.
+- Verification actions (part 7) are a table: **Action**, **Command or method**,
+  **Where it runs**, **What it proves** — followed by a short "Will not be verified"
+  list with the reason for each.
+- Risk focus (part 8) is a numbered list; each item is two or three plain sentences:
+  what the risk is, where it sits, what happens in production if it is real.
+- No abbreviations the ticket does not use; expand every acronym the first time; no
+  code identifiers except file names and the exact method or field under check.
+- The plan file `.review/<KEY>-plan.md` has the same layout, so the report can point to
+  it and the reviewer can reread it.
+
+Then ask with `AskUserQuestion` — question "Review plan for <KEY>: proceed, or add
+points I missed?", two options:
 
 - **"Proceed with this plan"** (Recommended) — review exactly what the plan says.
 - **"Add my points"** — description: "I will ask you to type them as your next message."
@@ -576,6 +604,10 @@ runs on the same key.
 - **Generic plan.** Technology-specific checks that could apply to any repository, or
   none at all, mean step 2 was not done — a Java/Spring diff and a TypeScript/React
   diff must produce visibly different plans.
+- **Compressed plan.** A plan shown as name lists ("13 technology-specific checks
+  T-1..T-13: positional row contract, Mockito spy idioms, …") tells the reviewer
+  nothing they can approve or add to. Every check is a table row that says what will be
+  looked at, where, and why it matters, in plain language.
 - **Missing the missing.** The costliest defects are absent from the diff — the test not
   written, the caller not updated, the migration not made reversible. Scan for absence
   deliberately.
