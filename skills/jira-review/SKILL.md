@@ -5,7 +5,7 @@ argument-hint: "[ticket-key]"
 disable-model-invocation: true
 background: false
 effort: high
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py *) Bash(git *) Read Write Edit Grep Glob AskUserQuestion Artifact
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py *) Bash(git *) Read Write Edit Grep Glob AskUserQuestion Artifact ArtifactData
 ---
 
 # Jira code review
@@ -537,11 +537,17 @@ to the review store, not to Jira or the PR.
    `--posted` lists where the findings actually landed (`pr,jira`, or the one that
    succeeded). The script prints
    `doc_id=<id> file=<path> url=<ledger> collection=<name>`.
-2. Write it with the Artifact tool — `action: "write_db"`, `db_op: "set"`, and `url`,
-   `collection`, `doc_id`, `file_path` all taken from that output line.
-3. Tell the user the run is recorded, with the ledger URL. If the write fails (no access
-   to the artifact, quota), say so and keep `.review/<KEY>-run.json` — it can be written
-   later with the same call.
+2. Write it with the **`ArtifactData`** tool — `action: "set"`, and `url`, `collection`,
+   `doc_id`, `file_path` all taken from that output line. (`ArtifactData` is the tool
+   that writes an artifact's database; the `Artifact` tool publishes pages and has no
+   database action. It is pre-approved in this skill's `allowed-tools`, so the write
+   needs no permission prompt and is not judged by the auto-mode classifier — a run
+   that is still refused means the tool is missing from that machine's build or the
+   ledger is not shared with the reviewer's account.)
+3. Tell the user the run is recorded, with the ledger URL. If the write fails, say so,
+   name the reason from the tool's error (permission denied → the tool is not allowed on
+   this machine; not found → the ledger is not shared with this account; quota), and
+   keep `.review/<KEY>-run.json` — it can be written later with the same call.
 4. Remove the review worktree: `git worktree remove --force .review/wt-<KEY>`. The
    reports, plan, context and run record under `.review/` stay; only the checkout goes.
 
