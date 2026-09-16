@@ -334,14 +334,20 @@ Then present the plan to the reviewer and ask with `AskUserQuestion` — questio
 "Review plan for <KEY>: proceed, or add points I missed?", two options:
 
 - **"Proceed with this plan"** (Recommended) — review exactly what the plan says.
-- **"Add my points"** — description: "Type the aspects you want covered as well; each
-  becomes a reviewer-added check with its own verdict in the report."
+- **"Add my points"** — description: "I will ask you to type them as your next message."
 
-Free text typed into "Other" is treated as additions. If the reviewer picks "Add my
-points" without typing any, ask one follow-up question for the points (free text).
+**How the reviewer's points are collected — a real text box, not a hidden one.** The
+question dialog only offers a text field behind its "Other" row, and reviewers do not
+find it. So when the reviewer picks "Add my points", do **not** ask another
+`AskUserQuestion`: reply with one short message — "Type the points you want covered, one
+per line, as your next message" — and **end the turn**. The reviewer then types freely
+in the normal chat box. Treat their next message as the additions: every line or
+sentence becomes one `R-n` item. (Text the reviewer types into "Other" on the question
+itself is also accepted as additions — that path just never has to be discovered.)
+
 Number every addition `R-1`, `R-2`, … in a **Reviewer-added checks** section of the
 plan, in the reviewer's own words, rewrite the plan file, show the updated section, and
-ask the same question once more so the reviewer can keep adding until they choose
+ask the plan question once more so the reviewer can keep adding until they choose
 "Proceed" — an ambiguous addition gets a clarifying question before it is written down.
 Additions the reviewer makes later, at any prompt during the review, are appended the
 same way. Every `T-n` and `R-n` item is then worked in step 4 exactly like a checklist
