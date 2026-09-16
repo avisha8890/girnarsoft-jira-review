@@ -361,14 +361,18 @@ person who has not read the code and does not know the checklist ids. Rules:
 Then ask with `AskUserQuestion` — question "Review plan for <KEY>: proceed, or add
 points I missed?", two options:
 
-- **"Proceed with this plan"** (Recommended) — review exactly what the plan says.
-- **"Add my points"** — description: "I will ask you to type them as your next message."
+- **"Proceed with this plan"** (Recommended) — description: "Review exactly what the
+  plan above says."
+- **"Add my points"** — description: "Press Submit, then type your points in the chat
+  box below as your next message — or choose Other here and type them directly. They
+  are added to this plan as numbered checks and the plan is shown again for approval."
 
 **How the reviewer's points are collected — a real text box, not a hidden one.** The
 question dialog only offers a text field behind its "Other" row, and reviewers do not
 find it. So when the reviewer picks "Add my points", do **not** ask another
 `AskUserQuestion`: reply with one short message — "Type the points you want covered, one
-per line, as your next message" — and **end the turn**. The reviewer then types freely
+per line, in the chat box as your next message; I will add them to the plan above and
+show it again" — and **end the turn**. The reviewer then types freely
 in the normal chat box. Treat their next message as the additions: every line or
 sentence becomes one `R-n` item. (Text the reviewer types into "Other" on the question
 itself is also accepted as additions — that path just never has to be discovered.)
