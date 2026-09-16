@@ -16,6 +16,7 @@ Fill this out completely. Write it to `.review/<TICKET-KEY>-review.md`.
 | **Reviewed at** | {ISO timestamp} |
 | **Change size** | {N} files, +{added} / −{removed} lines |
 | **Languages** | {detected from the diff} |
+| **Review plan** | `.review/{TICKET-KEY}-plan.md` — confirmed by the reviewer; {t} technology-specific and {r} reviewer-added check(s) |
 
 ## Verdict: {PASS / FAIL}
 
@@ -68,11 +69,29 @@ point to the detailed finding below.
 
 ---
 
+## Plan-specific checks
+
+Every check the plan added beyond the 28: the technology-specific items (`T-n`) the
+skill derived from this repo's stack, and the points the reviewer added (`R-n`), in
+their own words. None may be skipped; an item that could not be checked is UNVERIFIED
+with the reason in Notes. A FAIL here is a finding below like any other, with
+`file:line`.
+
+| ID | Check | Verdict | Severity | Notes |
+|---|---|---|---|---|
+| T-1 | {technology-specific check, tied to the diff} | | | |
+| R-1 | {as the reviewer wrote it} | | | |
+
+If the reviewer added nothing, the R rows read "None — the plan was approved as
+presented."
+
+---
+
 ## Findings
 
 Repeat this block for each FAIL and WARN, ordered BLOCKER → MAJOR → MINOR → WARN.
 
-### {SEVERITY} · {CR-XX} · {Short title}
+### {SEVERITY} · {CR-XX, T-X or R-X} · {Short title}
 
 **Where:** `path/to/file.ext:120-134`
 

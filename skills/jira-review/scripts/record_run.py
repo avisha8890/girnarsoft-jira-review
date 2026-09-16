@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SKILL_VERSION = "1.0.0"
+SKILL_VERSION = "1.0.1"
 
 
 def utcnow():
@@ -51,6 +51,27 @@ def repo_top():
                                    text=True, check=True).stdout.strip())
     except (subprocess.CalledProcessError, FileNotFoundError):
         return Path.cwd()
+
+
+def ensure_review_ignored(top):
+    """The review folder must never reach the repository. Append a .review/ rule to the
+    repo's .gitignore when it has none (once, with a comment) and warn when an earlier
+    commit already tracks review files -- untracking is a git change the reviewer makes."""
+    gi = top / ".gitignore"
+    text = gi.read_text() if gi.exists() else ""
+    if not re.search(r"^/?\.review/?$", text, re.M):
+        prefix = "" if not text or text.endswith("\n") else "\n"
+        with gi.open("a", encoding="utf-8") as fh:
+            fh.write(prefix + "# jira-review skill working files: diffs, plans, reports, run records, review worktree\n.review/\n")
+        print("note: added .review/ to .gitignore -- commit that change.", file=sys.stderr)
+    try:
+        tracked = subprocess.run(["git", "-C", str(top), "ls-files", ".review"], capture_output=True,
+                                 text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        tracked = ""
+    if tracked:
+        print("warning: files under .review/ are tracked by git; run: git rm -r --cached .review  (keeps them on disk)",
+              file=sys.stderr)
 
 
 def read(path):
@@ -87,6 +108,24 @@ def change_from_review(review_dir):
     return {"files": n_files, "added": added, "removed": removed, "commits": commits, "modules": modules}
 
 
+def change_for_run(review_dir, key, pr_ids):
+    """Diff size for the run. One PR (or none named): the .review/ root written by
+    collect_diff.sh, unless that PR has its own .review/KEY-pr-<id>/ folder. Several PRs:
+    the per-PR folders summed, modules unioned, so the ledger sees the whole change set."""
+    folders = [review_dir / f"{key}-pr-{i}" for i in pr_ids]
+    folders = [f for f in folders if f.is_dir()]
+    if not folders:
+        return change_from_review(review_dir)
+    total = {"files": 0, "added": 0, "removed": 0, "commits": 0, "modules": set()}
+    for f in folders:
+        c = change_from_review(f)
+        for k in ("files", "added", "removed", "commits"):
+            total[k] += c[k]
+        total["modules"].update(c["modules"])
+    total["modules"] = sorted(total["modules"])
+    return total
+
+
 def complexity(change, issue_type):
     """Deterministic size-based score so runs are comparable across reviewers.
     lines: <100 =1, <400 =2, <1000 =3, else 4 · files: >=10 +2, >=3 +1 · modules >1 +1
@@ -119,6 +158,10 @@ def main():
     ap.add_argument("--outcome", choices=["qa_handoff", "rework", "posted", "report_only", "blocked"])
     ap.add_argument("--posted", default="", help="comma list of pr,jira")
     ap.add_argument("--blocked-missing", default="", help='comma list, e.g. "branch name,PR link"')
+    ap.add_argument("--pr", default="", help="id of the PR reviewed in this run -- required when the ticket "
+                    "links more than one PR, so the record names the one the user chose rather than the "
+                    "first linked. Accepts a comma list; sizes are then summed over .review/KEY-pr-<id>/ "
+                    "folders if collect_diff.sh --out wrote them, else read from .review/")
     ap.add_argument("--counts", help="B,M,m,W,U overriding the report")
     ap.add_argument("--started", help="ISO time overriding .review/KEY-started.at")
     ap.add_argument("--finished", help="ISO time, default now")
@@ -128,6 +171,7 @@ def main():
 
     review_dir = repo_top() / ".review"
     review_dir.mkdir(exist_ok=True)
+    ensure_review_ignored(repo_top())
 
     if args.mark_start:
         stamp = review_dir / f"{args.mark_start}-started.at"
@@ -150,9 +194,13 @@ def main():
         print(f"warning: --verdict {args.verdict} but the report says {report_verdict}", file=sys.stderr)
 
     blocked = args.verdict == "BLOCKED"
+    chosen = [int(x) for x in args.pr.split(",") if x.strip()]
     change = {"files": 0, "added": 0, "removed": 0, "commits": 0, "modules": []} if blocked \
-        else change_from_review(review_dir)
+        else change_for_run(review_dir, key, chosen)
     linked = [p for p in (t.get("pull_requests") or []) if p["id"] in (t.get("ticket_pr_ids") or [])]
+    if chosen:                                   # the user's selection, in the order they chose
+        by_id = {p["id"]: p for p in linked}
+        linked = [by_id[i] for i in chosen if i in by_id]
     pr = linked[0] if linked else None
     dev = t.get("developer") or {}
     posted = {x.strip() for x in args.posted.split(",") if x.strip()}
@@ -165,8 +213,10 @@ def main():
         "status_at_start": t.get("status"),
         "reviewer": (data.get("reviewer") or {}).get("display_name"),
         "developer": dev.get("display_name"),
-        "branch": (t.get("ticket_branches") or [None])[0], "base_branch": t.get("base_branch"),
+        "branch": pr["source"] if pr and pr.get("source") else (t.get("ticket_branches") or [None])[0],
+        "base_branch": t.get("base_branch"),
         "pr_id": pr["id"] if pr else None, "pr_url": pr["url"] if pr else None,
+        "pr_ids": [p["id"] for p in linked], "pr_urls": [p["url"] for p in linked],
         "started_at": iso(started), "finished_at": iso(finished),
         "duration_sec": max(0, int((finished - started).total_seconds())),
         "verdict": args.verdict,
@@ -189,11 +239,13 @@ def main():
 
 
 def ledger_target():
-    """Where the record goes: tracking.artifact_url in the repo's jira-project.json wins,
-    else the skill's own tracking.json (one ledger shared by every project that installs
-    this plugin)."""
+    """Where the record goes: tracking.artifact_url in jira-project.json wins (the repo's
+    .claude/ copy, else the user's ~/.claude/ copy), else the skill's own tracking.json
+    (one ledger shared by every project that installs this plugin)."""
     cfg = {}
     pj = repo_top() / ".claude" / "jira-project.json"
+    if not pj.exists():
+        pj = Path.home() / ".claude" / "jira-project.json"
     if pj.exists():
         try:
             cfg = (json.loads(pj.read_text()).get("tracking") or {})

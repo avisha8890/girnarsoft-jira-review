@@ -1,7 +1,5 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "girnarsoft-review",
-  "description": "Code-review plugin for Claude Code: review the PR on a Jira ticket and move the ticket on. Configured per repository.",
   "owner": {
     "name": "Girnarsoft"
   },
@@ -18,5 +16,8 @@
         "qa"
       ]
     }
-  ]
+  ],
+  "metadata": {
+    "description": "Code-review plugin for Claude Code: review the PR on a Jira ticket and move the ticket on. Configured per repository."
+  }
 }

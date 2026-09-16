@@ -21,7 +21,12 @@ Variables already exported in the shell win over the file. Keys read:
   GITHUB_TOKEN (or GH_TOKEN)              GitHub token
   JIRA_REVIEW_JQL       override the default queue query (optional)
 
-Everything project-specific comes from <git toplevel>/.claude/jira-project.json:
+Everything project-specific comes from jira-project.json, looked up the same way:
+
+  1. <git toplevel>/.claude/jira-project.json   per-repo file
+  2. ~/.claude/jira-project.json                shared file
+
+Keys:
   jira.project          project key the queue is scoped to           (required)
   jira.review_status    the status that means "waiting for review"   (required)
   jira.base_url         Jira URL when not in the environment
@@ -106,12 +111,21 @@ def load_env_file(path):
                 os.environ[key] = value
 
 
-def load_project_config():
+def find_project_file():
+    """jira-project.json: the repo's own copy first, the user's ~/.claude/ copy second."""
     top = git_toplevel()
-    if not top:
-        return {}
-    path = os.path.join(top, ".claude", "jira-project.json")
-    if not os.path.isfile(path):
+    candidates = []
+    if top:
+        candidates.append(os.path.join(top, ".claude", "jira-project.json"))
+    candidates.append(os.path.expanduser("~/.claude/jira-project.json"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def load_project_config(path):
+    if not path:
         return {}
     try:
         with open(path, encoding="utf-8") as fh:
@@ -122,7 +136,8 @@ def load_project_config():
 
 ENV_FILE = find_env_file()
 load_env_file(ENV_FILE)
-PROJECT = load_project_config()
+PROJECT_FILE = find_project_file()
+PROJECT = load_project_config(PROJECT_FILE)
 JIRA_CFG = PROJECT.get("jira") or {}
 GIT_CFG = PROJECT.get("git") or {}
 JIRA_PROJECT = JIRA_CFG.get("project", "")
@@ -332,14 +347,20 @@ def references_in(text):
 
 
 # Comments this skill posts itself quote the branch and PR back to the ticket. They must
-# never count as the developer's word, or the reviewer's own "started" comment would win.
-SKILL_COMMENT_PREFIXES = ("Code review started", "Code review cannot start", "Code review \u2014",
-                          "h2. Code review", "Code review -")
+# never count as the developer's word, or the reviewer's own "started" or findings comment
+# would win the branch/PR resolution and the reviewer would become the "developer".
+# Every comment the skill posts therefore begins with "Code review" -- optionally behind a
+# Jira heading marker (h2.), bold (*...*), or a bullet -- and that is what is matched here,
+# case-insensitively, on the first non-blank line only.
+SKILL_COMMENT_FIRST_LINE = re.compile(
+    r"^\s*(?:h[1-6]\.\s*)?(?:[*_{]+\s*)?(?:[-*#]+\s*)?code review\b", re.IGNORECASE
+)
 
 
 def is_skill_comment(comment):
-    body = (comment.get("body") or "").lstrip()
-    return body.startswith(SKILL_COMMENT_PREFIXES)
+    body = comment.get("body") or ""
+    first = next((l for l in body.splitlines() if l.strip()), "")
+    return bool(SKILL_COMMENT_FIRST_LINE.match(first))
 
 
 def developer_comments(rec):
@@ -653,6 +674,7 @@ def main():
             "review_status": REVIEW_STATUS,
             "reviewer": reviewer,
             "env_file": ENV_FILE,
+            "project_file": PROJECT_FILE,
             "jira_project": JIRA_PROJECT,
             "base_branch": BASE_BRANCH,
             "tickets": tickets,

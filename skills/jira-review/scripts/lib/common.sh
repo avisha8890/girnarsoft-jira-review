@@ -2,7 +2,9 @@
 # Shared setup for the jira-review shell scripts. Source it; never run it.
 #
 # Loads credentials from $JIRA_ENV_FILE, <repo>/.claude/jira.env or ~/.claude/jira.env
-# (shell variables already set win), reads <repo>/.claude/jira-project.json, and resolves:
+# (shell variables already set win), reads jira-project.json from <repo>/.claude/ or, when
+# the repo has none, from ~/.claude/ -- every file is looked up in the project first and
+# the user's home second, so either place works -- and resolves:
 #   TOP, PROJECT_JSON, ENV_FILE
 #   JIRA_BASE_URL   from the environment or jira.base_url        (required)
 #   JIRA_DEPLOYMENT jira.deployment, else "cloud" for *.atlassian.net, else "server"
@@ -15,6 +17,7 @@
 
 TOP=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 PROJECT_JSON="$TOP/.claude/jira-project.json"
+[ -f "$PROJECT_JSON" ] || PROJECT_JSON="$HOME/.claude/jira-project.json"
 
 cfg() { [ -f "$PROJECT_JSON" ] && jq -r "$1" "$PROJECT_JSON" 2>/dev/null | sed '/^null$/d' || true; }
 

@@ -5,7 +5,7 @@
 #   bash jira_handoff.sh <ISSUE-KEY> [--mode qa|rework] [--assignee <user>]
 #                        [--target <transition-or-status>]... [--dry-run]
 #
-# Modes (defaults from <repo>/.claude/jira-project.json):
+# Modes (defaults from <repo>/.claude/jira-project.json, else ~/.claude/jira-project.json):
 #   qa      target(s) jira.qa_status, hop through jira.qa_path (default []), assign
 #           jira.default_qa
 #   rework  target(s) jira.rework_targets, hop through jira.rework_path (default []),
