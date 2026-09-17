@@ -18,8 +18,10 @@
     "api_base": "<only for a self-hosted instance; omit for bitbucket.org / github.com>",
     "protected_branches": ["<branch names never taken as a feature branch; base_branch is always excluded>"]
   },
+  "repos": {
+    "<owner/other-repo, only for PRs in repositories other than this one>": "<local clone path, absolute or relative to this repo, e.g. ../other-repo>"
+  },
   "tracking": {
-    "artifact_url": "<omit to use the plugin's shared ledger; set to point this repo at a different ledger page>",
-    "collection": "reviews"
+    "ledger_url": "<omit to use the plugin's Review Ledger; set to send this repo's runs elsewhere>"
   }
 }

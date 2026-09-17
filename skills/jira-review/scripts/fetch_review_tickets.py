@@ -20,6 +20,9 @@ Variables already exported in the shell win over the file. Keys read:
   BITBUCKET_ACCESS_TOKEN                  Bitbucket bearer -- wins when set
   GITHUB_TOKEN (or GH_TOKEN)              GitHub token
   JIRA_REVIEW_JQL       override the default queue query (optional)
+  LEDGER_URL            Review Ledger service record_run.py sends runs to (optional;
+                        default: ledger_url in the skill's tracking.json)
+  LEDGER_TOKEN          bearer token, only when the ledger requires one
 
 Everything project-specific comes from jira-project.json, looked up the same way:
 
@@ -36,6 +39,11 @@ Keys:
   git.remote            remote name, default "origin"
   git.api_base          API base for a self-hosted instance (optional)
   git.protected_branches  names never taken as a feature branch (base_branch always is)
+  repos                 OPTIONAL -- local clones of OTHER repositories whose pull requests
+                        tickets link, as {"owner/repo": "path"}. The path is absolute or
+                        relative to this repository's root. The current checkout is found
+                        automatically and never needs an entry. All repositories must be on
+                        the same git host.
 
 Usage:
   python3 fetch_review_tickets.py
@@ -201,10 +209,10 @@ def jira_auth_header():
     )
 
 
-def remote_url():
+def remote_url(path=None):
+    cmd = ["git"] + (["-C", path] if path else []) + ["remote", "get-url", GIT_REMOTE]
     try:
-        out = subprocess.run(["git", "remote", "get-url", GIT_REMOTE], capture_output=True, text=True,
-                             check=True, timeout=10)
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
         return out.stdout.strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return ""
@@ -326,24 +334,79 @@ def default_jql():
 # the branch on the ticket when development starts; that line is the source of truth.
 # Jira wiki markup is tolerated: a leading bullet (* - #), and *bold*, _italic_, {{monospace}}
 # or quotes around the name.
+# "Branch: X", "PWA branch: X", "PWA UI branch: X", "pwa-ui branch - X": up to three words
+# may precede "branch". A branch name is only ever compared with the source branch of a PR
+# the ticket links, so no word has to name a repository.
 BRANCH_LINE = re.compile(
-    r"(?im)^\s*(?:[*#\-]+\s*)?(?:[A-Za-z]+\s+)?branch(?:\s*name)?\s*[:\-]\s*(?:\{\{|[`'\"*_])*([A-Za-z0-9._/\-]+)"
+    r"(?im)^\s*(?:[*#\-]+\s*)?(?:[A-Za-z][\w\-]*\s+){0,3}branch(?:\s*name)?\s*[:\-]\s*(?:\{\{|[`'\"*_])*([A-Za-z0-9._/\-]+)"
 )
-# Bitbucket ".../pull-requests/<id>", GitHub ".../pull/<id>", GitLab ".../merge_requests/<id>"
-PR_URL = re.compile(r"https?://[^\s/]+/[^\s]*?/(?:pull-requests|pull|merge_requests)/(\d+)")
+# Bitbucket ".../<ws>/<repo>/pull-requests/<id>", GitHub ".../<owner>/<repo>/pull/<id>",
+# GitLab ".../<group>/<project>/-/merge_requests/<id>". The path before the marker is the
+# repository slug: a PR number alone is ambiguous as soon as two repositories exist.
+# A "create a pull request" form (/pull-requests/new?...) has no number and never matches.
+PR_URL = re.compile(r"https?://[^\s/]+/((?:[^\s/?#]+/)+?)(?:-/)?(?:pull-requests|pull|merge_requests)/(\d+)")
 
 
 def references_in(text):
+    """Branch lines and PR links in one text: (branch names, [{"id", "slug", "url"}])."""
     branches, prs = [], []
     for m in BRANCH_LINE.finditer(text or ""):
         name = m.group(1).rstrip(".,;)*_")
         if name.lower() not in PROTECTED and name not in branches:
             branches.append(name)
     for m in PR_URL.finditer(text or ""):
-        pid = int(m.group(1))
-        if pid not in prs:
-            prs.append(pid)
+        slug, pid = m.group(1).strip("/"), int(m.group(2))
+        if not any(x["id"] == pid and x["slug"].lower() == slug.lower() for x in prs):
+            prs.append({"id": pid, "slug": slug, "url": m.group(0)})
     return branches, prs
+
+
+# ---------------------------------------------------------------------------
+# Local clones: the current checkout, plus "repos" {"owner/repo": "path"}
+# ---------------------------------------------------------------------------
+
+_CLONES = None
+
+
+def git_ok(path, *args):
+    try:
+        return subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=10).returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def clone_map():
+    """lower-case slug -> {"slug", "path", "exists", "current"}: where a PR's repository is
+    checked out on this machine."""
+    global _CLONES
+    if _CLONES is not None:
+        return _CLONES
+    top = os.path.realpath(git_toplevel() or os.getcwd())
+    out = {}
+    current = repo_slug()
+    if current:
+        out[current.lower()] = {"slug": current, "path": top, "exists": True, "current": True}
+    declared = PROJECT.get("repos") or {}
+    if isinstance(declared, list):  # tolerate [{"slug": ..., "path": ...}]
+        declared = {d.get("slug"): d.get("path") for d in declared if isinstance(d, dict) and d.get("slug")}
+    if not isinstance(declared, dict):
+        sys.exit(f'error: "repos" in {PROJECT_FILE} must map "owner/repo" to a local path')
+    for slug, raw in declared.items():
+        slug = str(slug).strip("/")
+        raw = os.path.expanduser(str(raw or ""))
+        path = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(top, raw))
+        exists = os.path.isdir(path) and git_ok(path, "rev-parse", "--git-dir")
+        out.setdefault(slug.lower(), {"slug": slug, "path": path, "exists": exists, "current": path == top})
+    _CLONES = out
+    return out
+
+
+def clone_for(slug):
+    return clone_map().get((slug or "").lower())
+
+
+def repo_name(slug):
+    return (slug or "").rstrip("/").split("/")[-1]
 
 
 # Comments this skill posts itself quote the branch and PR back to the ticket. They must
@@ -368,46 +431,40 @@ def developer_comments(rec):
     return [c for c in (rec.get("comments") or []) if not is_skill_comment(c)]
 
 
-def current_references(rec):
-    """The branch(es) and PR(s) the ticket currently points at.
+def ticket_references(rec):
+    """Every branch named and every PR linked on the ticket, from developer comments (newest
+    first) and then the description.
 
-    Developers re-post "Branch: ..." / "PR: ..." when they re-cut a branch or raise a new
-    PR, so the LATEST comment carrying a branch reference wins for branches and the latest
-    carrying a PR reference wins for PRs (they may be different comments). The description
-    is the fallback when no comment has one. Everything older is returned as `superseded`
-    so the reviewer can see what was replaced -- it is never used as the source.
-    Returns (branches, pr_ids, superseded)."""
+    There is no "latest comment wins" any more. Which PRs still count is decided by each
+    PR's own state on the git host: two developers linking two PRs in separate comments
+    both count, and a re-raised PR retires the old one because the old one is declined or
+    superseded. Each PR remembers who linked it -- the person a failed review of that PR
+    goes back to. Returns (branch names, [{"id", "slug", "url", "linked_by"}])."""
     branches, prs = [], []
-    superseded = []
-    for c in reversed(developer_comments(rec)):
-        b, p = references_in(c.get("body"))
-        if not (b or p):
-            continue
-        take_b = b and not branches
-        take_p = p and not prs
-        if take_b:
-            branches = b
-        if take_p:
-            prs = p
-        if (b and not take_b) or (p and not take_p):
-            superseded.append({"author": c.get("author"), "created": (c.get("created") or "")[:19],
-                               "branches": b if not take_b else [], "pr_ids": p if not take_p else []})
-    db, dp = references_in(rec.get("description"))
-    if not branches:
-        branches = db
-    elif db:
-        superseded.append({"author": "description", "created": "", "branches": db, "pr_ids": []})
-    if not prs:
-        prs = dp
-    elif dp:
-        superseded.append({"author": "description", "created": "", "branches": [], "pr_ids": dp})
-    return branches, prs, superseded
+    sources = [(c.get("body"), c) for c in reversed(developer_comments(rec))] + [(rec.get("description"), None)]
+    for text, c in sources:
+        names, links = references_in(text)
+        for name in names:
+            if name not in branches:
+                branches.append(name)
+        for link in links:
+            if any(x["id"] == link["id"] and x["slug"].lower() == link["slug"].lower() for x in prs):
+                continue
+            if c and c.get("author_name"):
+                link["linked_by"] = {"name": c["author_name"], "display_name": c.get("author"),
+                                     "source": f"comment by {c.get('author')} on {(c.get('created') or '')[:10]}"}
+            elif rec.get("assignee_name"):
+                link["linked_by"] = {"name": rec["assignee_name"], "display_name": rec.get("assignee"),
+                                     "source": "ticket assignee"}
+            else:
+                link["linked_by"] = None
+            prs.append(link)
+    return branches, prs
 
 
 def developer_of(rec):
-    """Who to hand a failed review back to: the author of the most recent comment that put
-    a branch or PR reference on the ticket. Falls back to the assignee when the reference
-    lives in the description (or nowhere)."""
+    """Who to hand a failed review back to when no single PR says: the author of the most
+    recent comment that put a branch or PR reference on the ticket, else the assignee."""
     for c in reversed(developer_comments(rec)):
         branches, prs = references_in(c.get("body"))
         if (branches or prs) and c.get("author_name"):
@@ -435,9 +492,9 @@ def comments_of(fields):
 # Git host: Bitbucket Cloud or GitHub, chosen by git.host or the remote URL
 # ---------------------------------------------------------------------------
 
-def repo_slug():
+def repo_slug(path=None):
     """owner/repo (workspace/repo) from the remote, credentials and .git stripped."""
-    url = remote_url()
+    url = remote_url(path)
     if not url:
         return ""
     url = re.sub(r"^[a-z]+://", "", url)
@@ -455,6 +512,8 @@ def shape_pr(pr):
             "id": pr.get("number"), "title": pr.get("title"), "state": state,
             "source": (pr.get("head") or {}).get("ref"), "destination": (pr.get("base") or {}).get("ref"),
             "author": (pr.get("user") or {}).get("login"), "url": pr.get("html_url"), "updated": pr.get("updated_at"),
+            "source_commit": (pr.get("head") or {}).get("sha"), "destination_commit": (pr.get("base") or {}).get("sha"),
+            "merge_commit": pr.get("merge_commit_sha") if pr.get("merged_at") else None,
         }
     return {
         "id": pr.get("id"), "title": pr.get("title"), "state": pr.get("state"),
@@ -463,13 +522,16 @@ def shape_pr(pr):
         "author": (pr.get("author") or {}).get("display_name"),
         "url": ((pr.get("links") or {}).get("html") or {}).get("href"),
         "updated": pr.get("updated_on"),
+        "source_commit": (((pr.get("source") or {}).get("commit")) or {}).get("hash"),
+        "destination_commit": (((pr.get("destination") or {}).get("commit")) or {}).get("hash"),
+        "merge_commit": (pr.get("merge_commit") or {}).get("hash"),
     }
 
 
-def host_ready():
+def host_ready(slug=None):
     host = git_host()
     auth = host_auth_header()
-    slug = repo_slug()
+    slug = slug if slug is not None else repo_slug()
     if not host:
         return None, None, f"PR lookup skipped: cannot tell the git host from remote '{GIT_REMOTE}' -- set git.host"
     if host not in HOST_API_DEFAULTS:
@@ -481,8 +543,8 @@ def host_ready():
     return auth, slug, ""
 
 
-def host_pr_by_id(pr_id):
-    auth, slug, note = host_ready()
+def host_pr_by_id(pr_id, slug=None):
+    auth, slug, note = host_ready(slug)
     if note:
         return None
     base = host_api_base()
@@ -491,9 +553,9 @@ def host_pr_by_id(pr_id):
     return shape_pr(http_get(f"{base}/repositories/{slug}/pullrequests/{pr_id}", auth, what="Bitbucket"))
 
 
-def host_prs_for_branches(branches):
+def host_prs_for_branches(branches, slug=None):
     """PRs whose source branch is one the ticket names."""
-    auth, slug, note = host_ready()
+    auth, slug, note = host_ready(slug)
     if note or not branches:
         return []
     base = host_api_base()
@@ -512,9 +574,9 @@ def host_prs_for_branches(branches):
     return found
 
 
-def host_prs(key):
+def host_prs(key, slug=None):
     """PRs whose source branch or title mentions the ticket key -- a hint, never the source."""
-    auth, slug, note = host_ready()
+    auth, slug, note = host_ready(slug)
     if note:
         return {"prs": [], "note": note}
     base = host_api_base()
@@ -523,7 +585,7 @@ def host_prs(key):
         data = http_get(f"{base}/search/issues", auth, {"q": f"repo:{slug} is:pr {key} in:title", "per_page": 20},
                         what="GitHub")
         for item in data.get("items", []):
-            pr = host_pr_by_id(item.get("number"))
+            pr = host_pr_by_id(item.get("number"), slug)
             if pr:
                 found.append(pr)
         return {"prs": found, "note": ""}
@@ -537,11 +599,11 @@ def host_prs(key):
     return {"prs": found, "note": ""}
 
 
-def git_branches(key):
+def git_branches(key, path=None):
     """Local and remote branches whose name contains the ticket key."""
     try:
         out = subprocess.run(
-            ["git", "branch", "-a", "--list", f"*{key}*", "--format=%(refname:short)"],
+            ["git"] + (["-C", path] if path else []) + ["branch", "-a", "--list", f"*{key}*", "--format=%(refname:short)"],
             capture_output=True, text=True, check=True, timeout=10,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
@@ -573,32 +635,98 @@ def shape(issue, with_dev=True):
         "base_branch": BASE_BRANCH,
         "comments": comments_of(f),
     }
-    # What the ticket itself says about where the code is. Description first, then
-    # comments oldest to newest, so the developer's "Branch:" / "PR:" lines are found.
-    rec["ticket_branches"], rec["ticket_pr_ids"], rec["superseded"] = current_references(rec)
+    # What the ticket itself says about where the code is: every branch named and every
+    # PR linked. Each linked PR is one unit of review.
+    branches, links = ticket_references(rec)
+    rec["ticket_branches"] = branches
+    rec["ticket_pr_ids"] = [link["id"] for link in links]
     rec["developer"] = developer_of(rec)
-    rec["missing_on_ticket"] = [name for name, val in (("branch name", rec["ticket_branches"]),
-                                                       ("PR link", rec["ticket_pr_ids"])) if not val]
+    rec["ticket_prs"] = []
+    rec["missing_on_ticket"] = [name for name, val in (("branch name", branches), ("PR link", links)) if not val]
+    rec["conflicts"], rec["local_problems"], rec["branches_without_pr"], rec["unreadable_prs"] = [], [], [], []
 
     if with_dev and key:
+        notes = []
+
+        def soft(fn, *args, default=None):
+            """One failed lookup (a deleted PR, a repository this login cannot see) must not
+            abort the whole queue: keep going, say why."""
+            try:
+                return fn(*args)
+            except SystemExit as exc:
+                notes.append(str(exc).splitlines()[0][:200])
+                return default
+
+        units = []
+        for link in links:
+            before = len(notes)
+            pr = soft(host_pr_by_id, link["id"], link["slug"])
+            clone = clone_for(link["slug"])
+            name = repo_name(link["slug"])
+            unit = {"unit": f"{name}-pr{link['id']}", "repo": name, "slug": link["slug"], "id": link["id"],
+                    "url": link["url"], "linked_by": link["linked_by"],
+                    "clone": clone["path"] if clone else None, "clone_exists": bool(clone and clone["exists"]),
+                    "current_repo": bool(clone and clone["current"]), "found": pr is not None}
+            for field in ("title", "state", "source", "destination", "author", "updated",
+                          "source_commit", "destination_commit", "merge_commit"):
+                unit[field] = (pr or {}).get(field)
+            if pr and pr.get("url"):
+                unit["url"] = pr["url"]
+            unit["reviewable"] = (unit["state"] or "").upper() in ("OPEN", "MERGED")
+            unit["branch_on_ticket"] = bool(unit["source"]) and unit["source"] in branches
+            if not pr:
+                why = notes[before] if len(notes) > before else "no details returned"
+                rec["unreadable_prs"].append(f"PR #{link['id']} in {link['slug']} could not be read from the git host "
+                                             f"({why}) -- a wrong or deleted link, or no access for this login")
+            elif unit["reviewable"] and not unit["branch_on_ticket"]:
+                rec["conflicts"].append(f"PR #{link['id']} ({link['slug']}) is from branch {unit['source']}, "
+                                        "which the ticket does not name")
+            if pr and unit["reviewable"] and not unit["clone_exists"]:
+                rec["local_problems"].append(
+                    f"PR #{link['id']} is in {link['slug']}, which has no local clone -- clone it and add "
+                    f'"{link["slug"]}": "<path>" under "repos" in {PROJECT_FILE or ".claude/jira-project.json"}')
+            units.append(unit)
+        rec["ticket_prs"] = units
+        found = [u for u in units if u["found"]]
+        if links and not found:
+            rec["local_problems"].append("none of the PRs linked on the ticket could be read from the git host -- "
+                                         "check the git-host credentials: " + "; ".join(rec["unreadable_prs"])[:300])
+        if found and not any(u["reviewable"] for u in found):
+            rec["missing_on_ticket"].append("an open or merged PR (every PR linked is declined or superseded)")
+        sources = {u["source"] for u in units if u["source"]}
+        rec["branches_without_pr"] = [b for b in branches if b not in sources]
+
+        # Hints for a blocked review: PRs found by branch name or ticket key in every
+        # repository this machine knows -- never the source of a review.
         seen, prs = set(), []
 
-        def add(pr):
-            if pr and pr.get("id") not in seen:
-                seen.add(pr["id"])
-                prs.append(pr)
+        def add(pr, slug, linked):
+            if not pr:
+                return
+            ident = ((slug or "").lower(), pr.get("id"))
+            if ident in seen:
+                return
+            seen.add(ident)
+            prs.append(dict(pr, slug=slug, repo=repo_name(slug), linked=linked))
 
-        for pid in rec["ticket_pr_ids"]:                                    # 1. PR linked on the ticket
-            add(host_pr_by_id(pid))
-        for pr in host_prs_for_branches(rec["ticket_branches"]):   # 2. PR for the named branch
-            add(pr)
-        bb = host_prs(key)                               # 3. PR mentioning the key
-        for pr in bb["prs"]:
-            add(pr)
+        for u in found:
+            add({k: u[k] for k in ("id", "title", "state", "source", "destination", "author", "url", "updated")},
+                u["slug"], True)
+        known = [c["slug"] for c in clone_map().values()] or [repo_slug()]
+        for slug in known:
+            for pr in soft(host_prs_for_branches, branches, slug, default=[]) or []:
+                add(pr, slug, False)
+            bb = soft(host_prs, key, slug, default={"prs": [], "note": ""})
+            for pr in bb["prs"]:
+                add(pr, slug, False)
+            if bb["note"]:
+                notes.append(bb["note"])
         rec["pull_requests"] = prs
-        rec["branches"] = git_branches(key)
-        if bb["note"]:
-            rec["note"] = bb["note"]
+        rec["branches"] = [b if c["current"] else f"{repo_name(c['slug'])}: {b}"
+                           for c in clone_map().values() if c["exists"] for b in git_branches(key, c["path"])] \
+            or git_branches(key)
+        if notes:
+            rec["note"] = "; ".join(dict.fromkeys(notes))
     return rec
 
 
@@ -613,19 +741,24 @@ def render(tickets):
         print(f"      link:     {t['url']}")
         for b in t.get("ticket_branches", []):
             print(f"      ticket says branch: {b}")
-        for pid in t.get("ticket_pr_ids", []):
-            print(f"      ticket says PR:     #{pid}")
-        missing = [name for name, val in (("branch name", t.get("ticket_branches")),
-                                          ("PR link", t.get("ticket_pr_ids"))) if not val]
-        if missing:
-            print(f"      MISSING on ticket:  {', '.join(missing)}  -> review blocked until added")
-        for pr in t.get("pull_requests", []):
-            print(
-                f"      PR #{pr.get('id')}: {pr.get('title')} "
-                f"[{pr.get('source')} -> {pr.get('destination')}] ({pr.get('state')})"
-            )
-            if pr.get("url"):
-                print(f"                {pr['url']}")
+        for u in t.get("ticket_prs", []):
+            state = u.get("state") or "not found"
+            flags = [] if u.get("reviewable") else ["not reviewable"]
+            if u.get("reviewable") and not u.get("branch_on_ticket"):
+                flags.append("branch not on ticket")
+            if u.get("reviewable") and not u.get("clone_exists"):
+                flags.append("no local clone")
+            print(f"      ticket PR:  {u['repo']} #{u['id']} {u.get('title') or ''} "
+                  f"[{u.get('source')} -> {u.get('destination')}] ({state})" + (f"  <- {', '.join(flags)}" if flags else ""))
+        for label, items in (("MISSING on ticket", t.get("missing_on_ticket")), ("CONFLICT", t.get("conflicts")),
+                             ("LOCAL SETUP", t.get("local_problems")), ("UNREADABLE", t.get("unreadable_prs"))):
+            for item in items or []:
+                print(f"      {label}: {item}")
+        for b in t.get("branches_without_pr") or []:
+            print(f"      branch without a PR: {b}")
+        for pr in [x for x in t.get("pull_requests", []) if not x.get("linked")]:
+            print(f"      found by search: {pr.get('repo')} #{pr.get('id')} {pr.get('title')} "
+                  f"[{pr.get('source')} -> {pr.get('destination')}] ({pr.get('state')})")
         for br in t.get("branches", []):
             print(f"      branch:   {br}")
         if not t.get("pull_requests") and not t.get("branches"):
@@ -677,6 +810,7 @@ def main():
             "project_file": PROJECT_FILE,
             "jira_project": JIRA_PROJECT,
             "base_branch": BASE_BRANCH,
+            "repos": list(clone_map().values()),
             "tickets": tickets,
         }, indent=2))
     else:

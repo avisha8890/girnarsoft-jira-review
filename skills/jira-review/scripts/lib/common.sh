@@ -68,8 +68,10 @@ if [ -z "$GIT_HOST" ]; then
     *)               GIT_HOST="" ;;
   esac
 fi
-# owner/repo: strip scheme, userinfo, host, and .git -- works for https and ssh forms
-GIT_SLUG=$(printf '%s' "$REMOTE_URL" | sed -E 's#^[a-z]+://##; s#^[^@/]+@##; s#^[^:/]+[:/]##; s#\.git$##; s#/$##')
+# owner/repo: strip scheme, userinfo, host, and .git -- works for https and ssh forms.
+# REVIEW_REPO_SLUG overrides it when acting on another repository of a multi-repository
+# project (post_pr_comment.sh --repo).
+GIT_SLUG="${REVIEW_REPO_SLUG:-$(printf '%s' "$REMOTE_URL" | sed -E 's#^[a-z]+://##; s#^[^@/]+@##; s#^[^:/]+[:/]##; s#\.git$##; s#/$##')}"
 GIT_API_BASE="$(cfg '.git.api_base // empty')"
 if [ -z "$GIT_API_BASE" ]; then
   case "$GIT_HOST" in

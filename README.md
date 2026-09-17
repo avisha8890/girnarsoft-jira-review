@@ -1,12 +1,15 @@
 # jira-review — Claude Code plugin
 
-Rigorous code review of the pull request attached to a Jira ticket. Pulls your review
-queue (or one ticket by key), resolves the branch and PR the ticket names, diffs from the
-merge base, works a 28-point technology-independent checklist, writes a PASS/FAIL report
-with severities and concrete `file:line` findings, and — with your confirmation — posts
-the findings to the PR (Bitbucket Cloud or GitHub) and the Jira ticket, then moves the
-ticket on: **PASS → your QA status, assigned to your QA person; FAIL → your rework
-transition, assigned back to the developer who put the branch/PR on the ticket.**
+Rigorous code review of the pull requests attached to a Jira ticket. Pulls your review
+queue (or one ticket by key), resolves every PR the ticket links — one PR, one PR per
+repository, or several PRs in one repository — and checks each out in its own git
+worktree. It shows you a review plan to approve or extend, works a 28-point
+technology-independent checklist plus stack-specific checks, writes a PASS/FAIL report with
+severities and concrete `file:line` findings, posts the findings to each PR (Bitbucket
+Cloud or GitHub) and to the Jira ticket, and — on your yes — moves the ticket on:
+**PASS → your QA status, assigned to your QA person; FAIL → your rework transition,
+assigned back to the developer who linked the failing PR.** Every run is recorded in the
+team's Review Ledger service.
 
 Nothing about a company, a Jira workflow, a git host or a programming language is built
 in. Each repository declares its own project key, status names, people, base branch and
@@ -28,9 +31,12 @@ Once installed it is available in every repository on that machine.
 /jira-review PROJ-123     # review that ticket straight away
 ```
 
-The review never approves or declines the PR, and never moves a ticket anywhere other
-than the configured QA status (PASS) or rework transition (FAIL). Every write to Jira or
-the git host is confirmed first.
+The review never approves or declines a PR, and never moves a ticket anywhere other
+than the configured QA status (PASS) or rework transition (FAIL). Selecting a ticket is
+the go-ahead for its comments ("cannot start", "review started" once you approve the plan,
+and the findings), which are posted without asking; the ticket move always asks first.
+Your own checkout is never switched or modified: each PR is read, built and tested in a
+worktree under `.review/`, removed at the end.
 
 ## What each repository needs
 
@@ -54,9 +60,20 @@ and fill it in. Required keys are marked; everything else is inferred or optiona
 | `git.remote` | remote name (default `origin`) |
 | `git.api_base` | API base for a self-hosted instance (optional) |
 | `git.protected_branches` | names never taken as a feature branch (`base_branch` always is) |
-| `tracking.artifact_url` | point this repo at a different ledger page (default: the plugin's shared one) |
+| `repos` | local clones of **other** repositories whose PRs tickets link, as `{"owner/repo": "path"}` (path absolute or relative to this repo's root). The current checkout is found automatically; one repo with several PRs needs nothing here |
+| `tracking.ledger_url` | send this repo's runs to a different Review Ledger (default: `ledger_url` in the plugin's `tracking.json`) |
 
-Add `.review/` to the repository's `.gitignore` — the review writes its working files there.
+Both files are looked up in the repository first (`<repo>/.claude/`), then in `~/.claude/`.
+The review writes its working files to `.review/` and adds that folder to `.gitignore`
+itself the first time.
+
+A ticket whose PRs span repositories, for example a web app in its own repo:
+
+```json
+"repos": { "girnarsoftware/lms-pwa-ui": "../lms-pwa-ui" }
+```
+
+Every repository must be cloned on the reviewer's machine and live on the same git host.
 
 Jira only exposes workflow moves from a ticket's *current* status, so if your review
 status has no direct move to the QA status, list the stepping-stone statuses in
@@ -70,35 +87,41 @@ first hop without writing anything.
 - `~/.claude/jira.env` (or `<repo>/.claude/jira.env`, or `$JIRA_ENV_FILE`) with Jira
   credentials and the git host's — see [`examples/jira.env`](examples/jira.env). Never committed.
 - `python3`, `jq`, `curl`, `git` on the PATH.
+- Network access to the Review Ledger service (see below). `LEDGER_URL` in `jira.env`
+  overrides its address; `LEDGER_TOKEN` is needed only if the ledger requires one.
 
 ## How the ticket is read
 
-- The **branch** is the `Branch:` line (also `PWA branch:` / `API branch:` / `Branch name -`)
-  and the **PR** is its link on the git host (`.../pull-requests/<id>` on Bitbucket,
-  `.../pull/<id>` on GitHub), on the ticket itself.
-  Jira markup around them (bullets, bold, `{{monospace}}`) is fine.
-- **The latest comment wins** for each. Older mentions are shown as superseded, never used.
-- If either is missing the review posts a "cannot start" comment naming what to add and stops.
-- The developer a FAIL goes back to is the author of the latest comment that carried the
-  branch/PR (fallback: the assignee).
+- The ticket must name at least one **branch** (a `Branch:` line; up to three words may
+  precede it, e.g. `PWA UI branch:`) and link at least one **PR** (`.../pull-requests/<id>`
+  on Bitbucket, `.../pull/<id>` on GitHub). Jira markup around them is fine.
+- **Every linked PR is a unit of review.** Which ones count is decided by each PR's state
+  on the git host, not by comment order: open and merged PRs are reviewable (a merged PR is
+  diffed from its merge commit), declined and superseded ones are ignored. The skill's own
+  comments are never read as links.
+- Missing branch or PR, or a reviewable PR from a branch the ticket does not name → the
+  review posts a "cannot start" comment naming what to add and stops.
+- With several reviewable PRs you choose which to review (default: all); the plan and
+  report then add checks between the PRs (shared fields, statuses, deploy order).
+- A FAIL goes back to the person who linked the failing PR.
 
 ## The ledger
 
-Every run — pass, fail or blocked — records itself on one shared page:
+Every run — pass, fail or blocked — is sent to the team's **Review Ledger** service, a small
+Spring Boot + PostgreSQL application hosted inside the network, with a dashboard at the
+same address. The address is `ledger_url` in `skills/jira-review/tracking.json`;
+`record_run.py` sends the record itself over HTTP (`PUT /api/v1/runs/<run_id>`), so no
+Claude account, subscription or tool permission is involved and anyone on the network can
+record work. Sending the same run again replaces it rather than duplicating it.
 
-**https://claude.ai/code/artifact/f4af8e7b-658e-43d4-95a8-776e7d276211**
+If the ledger cannot be reached (off the network, service down), the run is kept in
+`.review/pending/` and sent with the next run, or immediately with
+`python3 skills/jira-review/scripts/record_run.py --flush`.
 
-Per ticket: type, priority, complexity, how many review iterations, time to PASS, who
-reviewed and who developed. Per run: start time, duration, verdict, finding counts, diff
-size, outcome and links to the PR and ticket. The URL is fixed in
-`skills/jira-review/tracking.json`; the skill's step 6 writes the record through the
-Artifact tool, so no extra credentials are needed. The page keeps its data in the
-artifact's own store, which means it is organisation-internal: sign in to claude.ai
-with an account in the owning organisation to view it or to have your runs recorded.
-Records carry `project`, `product` and `repo`, and the page filters by project, so many
-repositories share one ledger. A fork of this plugin for another organisation replaces
-the URL in `tracking.json` once; a single repository can point elsewhere with
-`tracking.artifact_url`.
+Per ticket the dashboard shows iterations, time to PASS, reviewer and developer; per run:
+start time, duration, verdict, finding counts, diff size, complexity, outcome and every
+reviewed PR. A fork for another organisation changes `ledger_url` once; one repository can
+point elsewhere with `tracking.ledger_url`, one machine with `LEDGER_URL` in `jira.env`.
 
 ## Layout
 
@@ -109,9 +132,7 @@ skills/jira-review/SKILL.md         the skill
 skills/jira-review/scripts/         fetch_review_tickets.py, collect_diff.sh, jira_comment.sh,
                                     post_pr_comment.sh, jira_handoff.sh, record_run.py
 skills/jira-review/scripts/lib/     common.sh — credentials, Jira URL, git host, API bases
-skills/jira-review/tracking.json    the ledger page every run records to
-ledger/review-ledger.html           the ledger page's source — publish it as a Claude artifact with the
-                                    db capability to run your own, then put its URL in tracking.json
+skills/jira-review/tracking.json    the Review Ledger address every run is sent to
 skills/jira-review/references/      review-checklist.md, report-template.md
 examples/                           jira-project.json, jira.env templates
 ```

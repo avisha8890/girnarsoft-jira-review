@@ -166,6 +166,10 @@ fields, narrowed types, new required parameters, changed status codes, changed d
 values, and changed semantics under an unchanged name are all breaking. Check every caller
 in the repo, and remember callers outside it. Rolling deploys mean old and new run together.
 
+When the ticket has several PRs — in other repositories or in other folders of the same
+repository — the consumer is usually another PR of the same ticket: compare what one side now sends with what the other side
+reads — field names, types, nullability, enum values, statuses — file and line on both.
+
 **FAIL when:** a breaking change ships without versioning, a deprecation window, or a
 coordinated consumer update.
 **Severity:** BLOCKER.
@@ -323,6 +327,9 @@ Does it deploy in one step, or does it require ordered steps nobody wrote down? 
 compatible with the previous version running alongside it during a rolling deploy? Can it
 be rolled back — and would a rollback corrupt data written by the new version? Are new
 infrastructure or permission requirements accounted for?
+
+For a ticket with several PRs, state the order they must be deployed or merged in and
+check both mixed states: new server with old client, and old server with new client.
 
 **FAIL when:** rollback is impossible or unsafe; the change breaks mixed-version operation.
 **Severity:** BLOCKER.

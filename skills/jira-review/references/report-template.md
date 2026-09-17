@@ -2,6 +2,12 @@
 
 Fill this out completely. Write it to `.review/<TICKET-KEY>-review.md`.
 
+**Several PRs in the review set** — in one repository or several: still one report. Use
+one pull-request row per PR, add the PR column to the traceability table, fill the
+Checks between PRs section, and cite every finding as `<unit>:<path>:<line>`
+(`<repo>-pr<id>`). One verdict and one counts line cover the whole run. With a single
+PR, drop those parts.
+
 ---
 
 # Code Review — {TICKET-KEY}: {Ticket summary}
@@ -11,6 +17,7 @@ Fill this out completely. Write it to `.review/<TICKET-KEY>-review.md`.
 | **Ticket** | {TICKET-KEY} — {url} |
 | **Pull request** | {PR title} — {url} |
 | **Branches** | `{source}` → `{target}` |
+| **{repo} PR #{id}** | *(several PRs only — one row per PR)* {PR title} — {url} · {state} · `{source}` → `{target}` · {N} files, +{added} / −{removed} · {behind} behind, or "merged" |
 | **Author** | {author} |
 | **Reviewer** | {current user} |
 | **Reviewed at** | {ISO timestamp} |
@@ -111,11 +118,25 @@ failure scenario, who it affects, and how it would surface.}
 
 ## Requirement traceability
 
-| Acceptance criterion | Implemented in | Covered by test | Status |
+| Acceptance criterion | PR | Implemented in | Covered by test | Status |
 |---|---|---|---|
-| {AC-1 text} | `file.ext:45` | `FileTest.ext:20` | Met / Partial / Missing |
+| {AC-1 text} | {repo #id — omit the column for a single PR} | `file.ext:45` | `FileTest.ext:20` | Met / Partial / Missing / Not in this run |
 
 Any criterion marked Partial or Missing must also appear as a CR-01 finding.
+
+---
+
+## Checks between PRs
+
+*Several PRs only — delete this section otherwise.* One row per `X-n` item from the plan.
+"Both sides" names the file and line where the interface is defined and where it is
+consumed, in each PR's unit. A FAIL here is also a finding above.
+
+| ID | Check | Both sides | Verdict | Severity | Notes |
+|---|---|---|---|---|---|
+| X-1 | {e.g. every field the backend returns is read with the same name, type and nullability} | `lms-api-pr10:path:line` ↔ `lms-pwa-ui-pr7:path:line` | | | |
+
+PRs on the ticket not reviewed in this run: {repo #id — reason}, or "none".
 
 ---
 

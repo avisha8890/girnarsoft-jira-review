@@ -5,7 +5,7 @@ argument-hint: "[ticket-key]"
 disable-model-invocation: true
 background: false
 effort: high
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py *) Bash(git *) Read Write Edit Grep Glob AskUserQuestion Artifact ArtifactData
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh *) Bash(bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py *) Bash(git *) Read Write Edit Grep Glob AskUserQuestion
 ---
 
 # Jira code review
@@ -34,6 +34,19 @@ echoes the resolved values (`jira_project`, `review_status`, `base_branch`, `git
 `product`). Nothing about a particular company, workflow or language is built in: if a
 value is missing the scripts say which key to add. Never print a credential.
 
+**A ticket can link any number of pull requests** — one PR in one repository, one PR in
+each of several repositories (a web app split across repos), or several PRs in the same
+repository (backend and frontend folders of one repo). Each linked PR is reviewed as its
+own unit. The current checkout is found automatically; any other repository a ticket's
+PRs live in needs its local clone declared once in `jira-project.json`:
+
+```json
+"repos": { "girnarsoftware/lms-pwa-ui": "../lms-pwa-ui" }
+```
+
+The path is absolute or relative to this repository's root. All repositories must be on
+the same git host.
+
 ## Review queue
 
 !`python3 ${CLAUDE_SKILL_DIR}/scripts/fetch_review_tickets.py --ticket "$ARGUMENTS" --json 2>&1 || true`
@@ -57,9 +70,9 @@ These apply for the whole task, not just the first response.
    `UNVERIFIED`, not PASS.
 3. **Read around the diff, in the worktree.** Open the full file for any non-trivial
    change — a hunk that looks fine in isolation is often wrong in context. Every file
-   read and every search is done in the review worktree (`.review/wt-<KEY>`, the PR's
-   source commit checked out by `collect_diff.sh --worktree`), never in the user's
-   checkout, whose branch is unknown and irrelevant.
+   read and every search is done in the reviewed PR's worktree
+   (`.review/<KEY>/<unit>/wt`, checked out by `collect_diff.sh --worktree`), never in the
+   user's checkout, whose branch is unknown and irrelevant.
 4. **Stay technology-independent.** Detect the stack, then apply universal checks. Never
    assume a language.
 5. **Separate blocking from advisory.** A style nit never carries the weight of a missing
@@ -76,10 +89,11 @@ These apply for the whole task, not just the first response.
    resolution — a findings comment that starts any other way would be read as the
    developer's latest PR reference and hand the rework back to the reviewer.
 8. **The user's checkout is never read for the review, never run, never switched.**
-   Reading, searching, building and testing all happen in the review worktree at the
-   PR's source commit (created in step 1, removed in step 7 or on abandon). The user's
+   Reading, searching, building and testing all happen in each reviewed PR's worktree
+   (created in step 1, removed in step 7 or on abandon). The user's
    working tree, index and current branch are left exactly as found — the reviewer may
-   be on any branch, with uncommitted work, and the result is the same.
+   be on any branch, with uncommitted work, and the result is the same. Every reviewed PR
+   gets its own worktree, in its own repository's clone, each removed the same way.
 9. **Comments are posted without asking; ticket moves and PR decisions are not.**
    Selecting a ticket — by answering the step-0 question or by passing its key on the
    command line — is the go-ahead for every comment this skill writes: "cannot start —
@@ -90,8 +104,8 @@ These apply for the whole task, not just the first response.
    — post, then report where it landed. What still needs its own yes is the follow-on
    move in step 6: on a PASS the QA handoff (move to `jira.qa_status`, assign
    `jira.default_qa`), on a FAIL the rework handback (transition `jira.rework_targets`,
-   assign the developer in `developer` from the queue output). Approving or declining
-   the PR is never automated.
+   assign the person who linked the failing PR). Approving or declining a PR is never
+   automated.
 
 ## Steps
 
@@ -113,8 +127,9 @@ take a key. Never pick for the user, and never start on a ticket that was not se
 - Queue empty → say "No tickets in <review_status> are assigned to you." and stop.
 - In the table, mark each ticket's branch and PR as present or **missing** — the user
   should see before choosing that a ticket will be blocked.
-- When a ticket names more than one PR, list every id in the PR column (`#904, #906`)
-  so the user can see that a PR selection will follow in step 1.
+- List every PR in `ticket_prs[]` as `<repo> #<id> (<state>)` — a PR number is only
+  unique inside its repository — and mark a ticket that will block (anything in
+  `missing_on_ticket` or `conflicts`) so the user can see it before choosing.
 - The user may answer the question with a key that is not in the list ("Other"); fetch
   it with `--ticket <KEY>` via `fetch_review_tickets.py` and continue as if it had been
   passed on the command line.
@@ -140,26 +155,37 @@ so — that is a CR-01 WARN — and review against the description and comments 
 This list is the yardstick for the whole review; nothing in the diff is judged "correct"
 except against it.
 
-**Then check the ticket names the code.** Two things are required on the ticket itself,
-and both come from the queue output:
+**Then check the ticket names the code.** Two things are required on the ticket itself —
+at least one branch name and at least one PR link — and both come from the queue output:
 
 | Required | Where it comes from | Queue field |
 |---|---|---|
-| Branch name | a `Branch:` / `PWA branch:` / `API branch:` line in a comment or the description | `ticket_branches[]` |
-| PR link | the PR's URL on the repository's git host (`.../pull-requests/<id>` on Bitbucket, `.../pull/<id>` on GitHub) in a comment or the description | `ticket_pr_ids[]` |
+| Branch name | a `Branch:` line in a comment or the description; up to three words may precede it (`PWA UI branch:`, `backend branch -`) | `ticket_branches[]` |
+| PR link | the PR's URL on the git host (`.../pull-requests/<id>` on Bitbucket, `.../pull/<id>` on GitHub) | `ticket_prs[]` |
 
-**The latest comment wins.** Developers re-post the branch when they re-cut it and the PR
-when they raise a new one, so `ticket_branches[]` comes from the most recent comment that
-names a branch and `ticket_pr_ids[]` from the most recent comment that links a PR — these
-may be different comments. The description is only the fallback when no comment has one.
-Older mentions are listed in `superseded[]` for context; never review against them. The
-skill's own comments ("Code review started", "Code review cannot start", the findings)
-quote the branch and PR back and are ignored by this resolution. `developer` is the
-author of the latest reference-bearing comment (fallback: the assignee) — the person a
-FAIL is handed back to in step 6.
+**Every PR linked on the ticket is one unit of review.** The fetch script collects every
+PR link from the developers' comments and the description, and asks the git host for each
+one. An entry in `ticket_prs[]` carries: `unit` (`<repo>-pr<id>`, the name of its folder
+under `.review/<KEY>/`), `repo`, `slug`, `id`, `title`, `state`, `source`, `destination`,
+`merge_commit`, `reviewable` (true for OPEN and MERGED), `branch_on_ticket` (its source
+branch is named on the ticket), `clone` and `clone_exists` (where its repository is checked
+out on this machine), and `linked_by` — the person who linked it, to whom a failed review
+of that PR goes back. This one model covers a single PR, one PR per repository across
+several repositories, and several PRs in the same repository.
 
-**If either is missing, the review cannot start.** Write `.review/<KEY>-blocked.txt` and
-post it — without asking; the user's selection in step 0 is the go-ahead — then stop:
+**No "latest comment wins".** Which PRs still count is decided by each PR's state on the
+git host, not by comment order: two developers linking two PRs in separate comments both
+count, and a re-raised PR retires the old one because the old one is DECLINED or
+SUPERSEDED (`reviewable: false`). The skill's own comments ("Code review started",
+"Code review cannot start", the findings) quote PRs back and are ignored.
+
+**The review cannot start** when `missing_on_ticket` or `conflicts` is non-empty:
+- `missing_on_ticket`: no branch name, no PR link, or links whose PRs are all declined or
+  superseded;
+- `conflicts`: a reviewable PR whose source branch the ticket does not name.
+
+Write `.review/<KEY>-blocked.txt` and post it — without asking; the user's selection in
+step 0 is the go-ahead — then stop:
 
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh <KEY> @.review/<KEY>-blocked.txt
@@ -172,71 +198,76 @@ Code review cannot start — required information is missing on the ticket.
 Missing:
   - Branch name      (add a comment: "Branch: <branch-name>")
   - PR link          (add a comment: "PR: <the pull request's URL on the git host>")
+  - An open or merged PR (every PR linked is declined or superseded)
+
+Conflict:
+  - PR #<id> (<owner/repo>) is from branch <b>, which the ticket does not name —
+    add "Branch: <b>" or link the right PR
 
 <Only when the fallbacks found something:>
 Possibly related, found by searching — please confirm by adding it to the ticket:
-  - PR #<id> <title> [<source> -> <destination>] (<state>)
+  - <repo> PR #<id> <title> [<source> -> <destination>] (<state>)
   - branch <name>
 
 Reviewer: <reviewer.display_name>. The ticket stays in Code Review; re-run the review
 once the above is on the ticket.
 ```
 
-List only the items actually missing. The "possibly related" block comes from the
-remaining `pull_requests[]` (git-host search by key) and `branches[]` (git) — offer
-them as hints, never use them as the source of the review. Then record the blocked run
-in the ledger (step 7: verdict `BLOCKED`, outcome `blocked`), tell the user what was
-posted, and stop. Do not collect a diff, do not post the "started" comment, do not
-transition the ticket.
+List only what applies. The "possibly related" block comes from `pull_requests[]` entries
+with `linked: false` (git-host search by branch name and ticket key) and `branches[]`
+(git) — hints, never the source of a review. Then record the blocked run in the ledger
+(step 7: verdict `BLOCKED`, outcome `blocked`), tell the user what was posted, and stop.
+Do not collect a diff, do not post the "started" comment, do not transition the ticket.
 
-**When both are present**, first settle which PR is under review.
+**Problems that are the reviewer's, not the ticket's.** `local_problems` — a reviewable
+PR whose repository has no local clone, or no PR on the ticket readable at all (usually
+git-host credentials) — are never posted to the ticket and nothing is recorded: tell the
+reviewer the exact fix (clone the repository and add its `"owner/repo": "<path>"` under
+`repos`, or fix the credentials) and stop. `unreadable_prs` — one link among several that
+the git host cannot return — does not block: tell the reviewer, leave it out of the run,
+and name it in the started comment as "could not be read". `branches_without_pr` — a
+branch named with no PR from it, often a test or merge branch — is only noted in the plan.
 
-**More than one PR on the ticket → ask, never assume.** `ticket_pr_ids[]` holds every
-PR URL found in the latest PR-bearing comment — developers often link an API PR and a
-PWA PR, or a main PR and a follow-up, in the same comment. If it holds more than one id,
-ask with `AskUserQuestion` (single choice, `multiSelect: false`) which **one** PR to
-review **before** anything is collected or posted. One option per PR, in the order they
-appear on the ticket: label `#<id>`, description `<title> — <source> -> <destination>
-(<state>)`, taken from the matching `pull_requests[]` entry (if the git host returned
-nothing for an id, say "not found on <git_host>" in the description). More than four
-ids → offer the first four from the ticket and let "Other" take an id. Never pick for
-the user, and never review a PR the user did not choose. Exactly one id on the ticket →
-no question; it is the selection.
+**Choose the PRs for this run.** The candidates are the entries with `reviewable: true`.
+- Exactly one → no question; it is the review set.
+- More than one → one `AskUserQuestion`, `multiSelect: true`, question "Which PRs to
+  review in this run?": a first option **"All <N> PRs (Recommended)"**, then one option per
+  PR, label `<repo> #<id>`, description `<title> — <source> -> <destination> (<state>)`.
+  More than three PRs → the first three individually and "Other" takes the rest as
+  `<repo> #<id>`. "All" (alone or with others ticked) means every candidate. Never pick for
+  the reviewer.
+- The ticked PRs are the **review set** for every step that follows. Candidates left out
+  are named in the started comment as "not reviewed in this run".
 
-**One PR per run.** The chosen PR is *the* PR under review for every step that follows
-— one diff, one checklist pass, one report, one verdict, one PR comment, one ledger
-record. The other PRs on the ticket are named in the started comment as "not reviewed
-in this run" and are otherwise ignored; to review them, run the skill again on the
-same key and choose the next one.
-
-The source branch is the chosen PR's `source` and the target its `destination`
-(`pull_requests[]` entry whose `id` matches). The PR's source must be one of the
-branches the ticket names in `ticket_branches[]`; if it is not, the review is blocked:
-post the blocked comment with a line
-`Conflict: ticket says branch <a>, PR #<id> is from <b> — please correct one of them`
-and stop. A DECLINED PR blocks the same way — a declined PR is not reviewable.
-
-Then collect the diff **and check the PR's code out into the review worktree**:
+**Collect each PR into its own folder and worktree**, in its own repository's clone:
 
 ```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh <source-branch> [target-branch] --worktree .review/wt-<KEY>
+# OPEN PR
+bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh <source> <destination> \
+     --repo <clone> --out .review/<KEY>/<unit> --worktree .review/<KEY>/<unit>/wt
+
+# MERGED PR — always from its merge commit: the branch is usually deleted after merge,
+# and a merged branch diffed against its target is empty
+bash ${CLAUDE_SKILL_DIR}/scripts/collect_diff.sh <merge_commit> <merge_commit>^1 \
+     --repo <clone> --out .review/<KEY>/<unit> --worktree .review/<KEY>/<unit>/wt
 ```
 
-The target defaults to `git.base_branch` from `.claude/jira-project.json` (echoed as
-`base_branch` in the queue output), never the remote HEAD. Pass it explicitly when the PR targets something else. This writes
-`meta.txt`, `stat.txt`, `files.txt`, `full.patch`, and `context.txt` into `.review/`
-(gitignored), and checks the source commit out, detached, into `.review/wt-<KEY>` — the
-whole project as the PR leaves it, sharing the repository's objects, costing only the
-working files. It diffs from the merge base, so you see only what this branch did.
+Each folder gets `meta.txt`, `stat.txt`, `files.txt`, `full.patch` and `context.txt`,
+and `wt/` holds that PR's code checked out, detached — the whole repository as the PR
+leaves it, sharing the clone's objects and costing only the working files. Two PRs of the
+same repository get two worktrees at two commits. Wherever the steps below say
+`full.patch`, `files.txt`, `stat.txt`, `meta.txt`, `context.txt` or "the worktree", they
+mean the folder of the PR being looked at. Everything stays under **this** repository's
+`.review/`, whichever repository the PR belongs to.
 
-`meta.txt` also says how far the branch is **behind the target** (commits on the target
-the branch does not have). Zero means the worktree is exactly what merging would
-produce. More than zero means it is not: the plan states the number, and the report
-lists it under "Not verified" with the advice to rebase or merge the target before
-relying on the test run.
+For an OPEN PR, `meta.txt` also says how far its branch is **behind its target**. Zero
+means the worktree is exactly what merging would produce; more than zero means it is
+not — the plan states the number, and the report lists it under "Not verified" with the
+advice to rebase or merge the target before relying on the test run. For a MERGED PR the
+worktree is the merged state itself, so the count does not apply; say "merged" instead.
 
-**Then stamp the start time** for the ledger (step 7) — the review's clock starts when
-the diff is in hand, planning included:
+**Then stamp the start time** for the ledger (step 7) — once for the run; the review's
+clock starts when the diffs are in hand, planning included:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py --mark-start <KEY>
@@ -251,7 +282,7 @@ stamp and the files under `.review/`.
 
 Before applying the checklist:
 
-- What languages are in the diff? Read the extensions in `.review/context.txt`, do not assume.
+- What languages are in each diff? Read the extensions in each PR's `context.txt`, do not assume.
 - What is the build and test command? Check the manifest, CI config, or `CLAUDE.md`.
 - Read 2-3 neighbouring files the PR did **not** touch. The existing code is the style guide.
 - Read `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, and every file under `.claude/rules/`
@@ -259,7 +290,8 @@ Before applying the checklist:
   as a rule. Project rules **override** generic best practice, and violating a
   documented rule is a FAIL under CR-27.
 
-All of it read from the worktree. This step is what makes the review language-agnostic:
+All of it read from each PR's worktree — a PR in another repository follows that
+repository's own manifest, `CLAUDE.md` and rules. This step is what makes the review language-agnostic:
 the checklist asks universal questions ("are failures handled?") and this step supplies
 the local answer ("in Go that means the returned error is checked, not an exception
 caught").
@@ -279,6 +311,15 @@ or file group from `files.txt`), each with file references from the worktree:
 - **Architecture that applies** — the documented rule (from `CLAUDE.md` or
   `.claude/rules/`) or, when nothing is written, the convention the examples show.
 
+**With two or more PRs in the review set, map what connects them.** The context file ends
+with a block **between PRs**, whichever repositories they are in: every interface one PR
+changes and another consumes or provides — endpoint path and method, request and response
+fields with types and nullability, enum values, error codes and statuses, queue or event
+message shapes, configuration keys and feature flags, constants or validation duplicated
+on both sides — with where it is defined and where it is used, file and line in each PR's
+worktree. When one PR's repository consumes another's as a library or package, record the
+version, tag or commit the consumer's manifest or lock file points at.
+
 A review that skips this pass judges the diff against itself; CR-09, CR-10 and the
 approach assessment in step 3 are built on it.
 
@@ -293,16 +334,18 @@ plan.
 
 **Nothing is evaluated before the reviewer has agreed what will be looked at.** Write
 `.review/<KEY>-plan.md`, show it in the chat, and ask. The plan is specific to this
-change — what *this* diff needs, not a copy of the checklist. Eight parts:
+change — what *these* diffs need, not a copy of the checklist. Eight parts, and a ninth
+when the review set has two or more PRs:
 
-1. **Change under review** — ticket key and summary, the chosen PR with
-   `source -> destination` (and, when the ticket names others, which PRs are not in this
-   run), size from `stat.txt`, languages from `context.txt`, and how far the branch is
-   behind the target from `meta.txt`.
+1. **Change under review** — ticket key and summary, then one row per PR in the review
+   set: repository, `#id`, state, `source -> destination`, size from its `stat.txt`,
+   languages from its `context.txt`, and how far its branch is behind its target (or
+   "merged"). Below the table: PRs not reviewed in this run, PRs that could not be read,
+   and branches named without a PR.
 2. **Expectations to trace** — the numbered list from `.review/<KEY>-requirements.md`,
    one line each, so the reviewer sees the yardstick before the measuring starts.
-3. **Areas of the diff** — the file groups or modules from `files.txt`, and for each
-   one what will be checked and why it matters.
+3. **Areas of the diff** — the file groups or modules from each PR's `files.txt`,
+   grouped by PR, and for each one what will be checked and why it matters.
 4. **Architecture and approach assessment** — from `.review/<KEY>-context.md`, one line
    per changed area: the rule or established pattern that applies, whether the PR
    follows it, and whether a simpler or safer way already exists in the codebase (an
@@ -325,23 +368,33 @@ change — what *this* diff needs, not a copy of the checklist. Eight parts:
    items is typical; fewer means the diff is trivial, more means the change is too big
    for one review and the plan should say so.
 7. **Verification actions** — what will actually be run (the build or test command from
-   step 2, on which module) in the review worktree, and what will only be read. What will *not* be verified, and why, so it is agreed now rather
+   step 2, on which module) in which PR's worktree, and what will only be read. What will *not* be verified, and why, so it is agreed now rather
    than discovered in the report.
 8. **Risk focus** — three to five hotspots specific to this diff, in one line each
    ("the new repository query is not scoped by tenant", "the retry loop has no cap").
+9. **Checks between PRs** (two or more PRs only) — numbered `X-1`, `X-2`, …, derived from
+   the between-PRs block of the context file: every field one side sends and the other
+   reads matches in name, type, nullability and allowed values; errors and statuses one
+   side can return are handled by the other; the order the PRs must be deployed or merged
+   in, and whether each old/new combination works while they roll out; flags and
+   configuration keys agree; duplicated constants and validation still say the same
+   thing; and when one repository consumes another as a library, that the consumer points
+   at the new version, tag or commit — and whether the tests can run against the combined
+   change (link the library's worktree into the consumer's) or must be marked
+   `UNVERIFIED` with that reason.
 
 **Present the plan in the chat as a document, not as a summary.** The reviewer decides
 from what is on screen, so the chat message carries the whole plan, laid out for a
 person who has not read the code and does not know the checklist ids. Rules:
 
-- Use the eight parts above as headings, in order, with the same numbering.
+- Use the parts above as headings, in order, with the same numbering.
 - Every list of checks is a **table**, one row per check, with four columns: **ID**,
   **What will be checked** (a full sentence in plain language), **Where** (file and
   line or file group from the diff), **Why it matters** (the production consequence if
   it is wrong). This applies to the checklist coverage (part 5 — group rows by theme
   and give every one of the 28 items its row, with N/A rows saying why), the
-  architecture and approach items (part 4), and every technology-specific check
-  (part 6). A check named only by its id or a two-word label ("Mockito spy idioms",
+  architecture and approach items (part 4), every technology-specific check (part 6),
+  and every check between PRs (part 9, with **Where** naming both sides). A check named only by its id or a two-word label ("Mockito spy idioms",
   "CSV ragged-row contract") is not presented — spell out what the reviewer would see
   if it failed.
 - Expectations (part 2) are a table: **#**, **Expectation** (the ticket's words),
@@ -405,28 +458,29 @@ Code review started.
 Reviewer: <`reviewer.display_name` from the queue output — the person running this skill>
 PR:       <PR title> — <PR url>          (or "none — reviewing branch directly")
 Branch:   <source> -> <target>
-Change:   <N> files, +<added> / -<removed> lines, <M> commits    (from .review/stat.txt and meta.txt)
+Change:   <N> files, +<added> / -<removed> lines, <M> commits    (from that PR's stat.txt and meta.txt)
 Scope:    <one line: what the change claims to do, from the ticket summary>
 Findings will be posted here and on the PR once the review is complete.
 ```
 
-When the ticket names other PRs besides the chosen one, add one line before "Findings
-will be posted": `Not reviewed in this run: #<id> <title>, #<id> <title>` — so the
-ticket shows which PR this review covers and which still wait for their own run.
+With several PRs in the review set, repeat the `PR:` / `Branch:` / `Change:` lines once
+per PR, each `PR:` line starting with its repository. Add before "Findings will be
+posted", only when they apply: `Not reviewed in this run: <repo> #<id> <title>, …` and
+`Could not be read: <repo> #<id>, …` — so the ticket shows which PRs this review covers.
 
 If `jira_comment.sh` fails, say so and continue the review; the comment is a courtesy,
 the review is the work.
 
 **If the reviewer does not approve** — walks away from the question, or says stop — post
-nothing, move nothing, record nothing in the ledger; remove the review worktree
-(`git worktree remove --force .review/wt-<KEY>`); tell the user the review was abandoned before it started and that the
+nothing, move nothing, record nothing in the ledger; remove every PR's worktree
+(`git -C <clone> worktree remove --force .review/<KEY>/<unit>/wt`); tell the user the review was abandoned before it started and that the
 ticket is untouched. Re-running the skill on the same key starts over from step 1.
 
 ### 4. Evaluate the diff against the ticket, then work the checklist
 
 **CR-01 comes first and carries the review.** For every expectation in
-`.review/<KEY>-requirements.md`, find the code in `.review/full.patch` that satisfies it
-and the test that proves it. Record each as **Met**, **Partial**, or **Missing** with the
+`.review/<KEY>-requirements.md`, find the code in the reviewed PRs' `full.patch` files that
+satisfies it and the test that proves it. Record each as **Met**, **Partial**, or **Missing** with the
 `file:line`. Then go the other way: every behavioural change in the diff must trace back
 to an expectation — anything that does not is either scope creep (CR-02) or a
 misreading of the ticket (CR-01).
@@ -438,12 +492,17 @@ diff changes Y"*. Severity: Missing criterion = MAJOR; the change solving a diff
 problem than the one asked = BLOCKER. The overall verdict is FAIL whenever an expectation
 is not met — a clean checklist does not rescue a change that does not do what was asked.
 
+With several PRs, an expectation is Met when any reviewed PR satisfies it and Missing only
+when none does; one that belongs to a PR **not reviewed in this run** is not Missing — it
+is "not in this run" and goes under Not verified. Every finding cites
+`<unit>:<path>:<line>` when the review set has more than one PR.
+
 Then read `references/review-checklist.md` and work the remaining 27 items in order. Do not skip to the
 interesting ones — the boring items are where production incidents come from.
 
 Then work every **plan-specific item** — the technology checks `T-1`, `T-2`, … and the
-reviewer's additions `R-1`, `R-2`, … from the plan in step 3 — the same way: what was
-asked, where in the diff it was checked, the verdict.
+reviewer's additions `R-1`, `R-2`, … and the checks between PRs `X-1`, `X-2`, … from the
+plan in step 3 — the same way: what was asked, where in the diff it was checked, the verdict.
 
 One verdict per item: `PASS`, `FAIL`, `WARN`, `N/A`, or `UNVERIFIED`.
 
@@ -457,8 +516,8 @@ Severity on every FAIL:
 Use `ultrathink` on CR-04 (edge cases), CR-12 (compatibility), CR-14 (authorisation), and
 CR-23 (rollback). Those four are where careful reasoning pays and skimming costs the most.
 
-**Running anything — build, tests, linter — happens in the review worktree
-(`.review/wt-<KEY>`, created in step 1), never in the user's checkout.** Run the build or
+**Running anything — build, tests, linter — happens in the reviewed PR's worktree
+(`.review/<KEY>/<unit>/wt`, created in step 1), never in the user's checkout.** Run the build or
 test command from step 2 inside that folder, on the module(s) the diff touches. Record
 the exact command and its result (counts, failing test names) in the report; a run
 that could not be done makes the item `UNVERIFIED`, not PASS. Build and test commands
@@ -468,11 +527,11 @@ that the run proves the branch, not the merge.
 
 ### 5. Write the report
 
-Follow `references/report-template.md`. Write to `.review/<TICKET-KEY>-review.md`.
-Name the reviewed PR in the header; when the ticket links others, list them under
-"Not verified" as "not part of this run".
+Follow `references/report-template.md`. Write to `.review/<TICKET-KEY>-review.md` — one
+report for the run, however many PRs it covers. Name every reviewed PR in the header;
+list PRs not in this run and unreadable ones under "Not verified".
 
-- Overall verdict is **FAIL if any BLOCKER or MAJOR exists**, otherwise PASS. An unmet
+- Overall verdict is **FAIL if any BLOCKER or MAJOR exists** in any PR or between PRs, otherwise PASS. An unmet
   ticket expectation is always at least MAJOR, so it always fails the review.
 - The "Requirement traceability" table lists **every** expectation from
   `.review/<KEY>-requirements.md` — none skipped, each with Met / Partial / Missing and
@@ -505,19 +564,25 @@ where it is. Skip the question entirely when the ticket is not in the review sta
 
 - **PR comment on the git host** (the author sees it in the PR; the script detects
   Bitbucket or GitHub from the remote, or `git.host`):
-  `bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh <pr-id> <summary.md>`
-  Write the summary to a file in `.review/` first: verdict line, counts, the BLOCKER and
-  MAJOR findings with `file:line`, one line per plan-specific check (`T-n`, `R-n`) with
-  its verdict, and the "Not verified" list. Not the whole report. Post it on the chosen PR only.
+  `bash ${CLAUDE_SKILL_DIR}/scripts/post_pr_comment.sh <id> .review/<KEY>/<unit>/pr-summary.md --repo <slug>`
+  One comment **per reviewed PR**, always with `--repo` — a PR number is only unique in its
+  repository, and without it the comment lands on whatever PR has that number here.
+  Write each summary first: the ticket verdict line and counts, the BLOCKER and MAJOR
+  findings **of that PR** and the checks between PRs that touch it, with `file:line`, one
+  line per plan-specific check with its verdict, and the "Not verified" list. Not the
+  whole report. A merged PR gets its comment too.
 - **Jira comment**:
   `bash ${CLAUDE_SKILL_DIR}/scripts/jira_comment.sh <KEY> @.review/<KEY>-jira-summary.txt`
   (convert the Markdown summary to Jira wiki markup first: `##` → `h2.`, `**x**` → `*x*`,
-  backticks → `{{x}}`). The first line is `h2. Code review — <KEY> · PR #<id> · Verdict:
-  <PASS/FAIL>` — it starts with "Code review" (rule 7) and names the reviewed PR, so a
-  ticket with several PRs shows which one each review comment belongs to.
+  backticks → `{{x}}`). **One** comment for the run. The first line is
+  `h2. Code review — <KEY> · <repo> PR #<id>[, <repo> PR #<id> …] · Verdict: <PASS/FAIL>`
+  — it starts with "Code review" (rule 7) and names every reviewed PR, so a ticket shows
+  which PRs each review covered.
 
-- **QA handoff — only on the user's yes, when the verdict is PASS and the ticket is
-  currently in the review status:**
+- **QA handoff — only on the user's yes, when the verdict is PASS, every reviewable PR on
+  the ticket was in this run's review set, and the ticket is currently in the review
+  status.** When some reviewable PR was left out, skip the move and say which PRs still
+  need their review:
   `bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh <KEY>`
   This walks the workflow to `jira.qa_status` from `.claude/jira-project.json`, hopping
   through `jira.qa_path` when the review status has no direct move, and assigns
@@ -528,14 +593,16 @@ where it is. Skip the question entirely when the ticket is not in the review sta
 - **Rework handback — only on the user's yes, when the verdict is FAIL and the ticket is
   currently in the review status:**
   `bash ${CLAUDE_SKILL_DIR}/scripts/jira_handoff.sh <KEY> --mode rework --assignee <developer.name>`
-  `<developer.name>` is the `developer.name` field of the ticket in the queue output —
-  the author of the comment that put the branch/PR on the ticket, falling back to the
-  assignee. The script tries `jira.rework_targets` in order — each entry is a transition
+  `<developer.name>` is `linked_by.name` of the PR whose findings failed the review —
+  the person who linked that PR on the ticket. When failing findings sit in PRs linked by
+  different people, the move question offers one option per person (and "leave the
+  ticket where it is"); when only checks between PRs failed, use the ticket's top-level
+  `developer`. The script tries `jira.rework_targets` in order — each entry is a transition
   name or a status, so a workflow that names the move differently per issue type is one
   list. Post the findings comment **first** so the developer finds the reasons on the
   ticket. Show the script's output verbatim.
-  - `developer` is null in the queue output → do not guess; post the findings and tell
-    the user the handback needs a name.
+  - No name is available (`linked_by` and `developer` both null) → do not guess; post the
+    findings and tell the user the handback needs a name.
 
 In both modes:
 
@@ -554,44 +621,52 @@ reviewer's call.
 
 ### 7. Record the run in the ledger — every run, every outcome
 
-Every execution of this skill, on every machine, writes one record to the same ledger
-page so the team can see the agent's throughput and turnaround. The page and its store
-come from `tracking.artifact_url` / `tracking.collection` in the repo's
-`.claude/jira-project.json` when set, else `${CLAUDE_SKILL_DIR}/tracking.json` — the
-script's output line names the one to use; never substitute another URL. This step is not optional and needs no confirmation: it writes
-to the review store, not to Jira or the PR.
+Every execution of this skill, on every machine, sends one record to the team's Review
+Ledger service so the team can see the agent's throughput and turnaround. The script does
+the sending itself over HTTP — no Claude tool, no Claude account or subscription involved.
+The ledger address comes from `LEDGER_URL` in `jira.env` (or the shell), else
+`tracking.ledger_url` in `.claude/jira-project.json`, else `${CLAUDE_SKILL_DIR}/tracking.json`;
+never substitute another URL. This step is not optional and needs no confirmation: it
+writes to the review store, not to Jira or the PR.
 
-1. Build the record — after step 6 has finished (or right after the blocked comment):
+1. Build and send the record — after step 6 has finished (or right after the blocked comment):
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py <KEY> --verdict <PASS|FAIL|BLOCKED> --outcome <qa_handoff|rework|posted|report_only|blocked> [--posted pr,jira] [--blocked-missing "branch name,PR link"] [--pr <id>]
+   python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py <KEY> --verdict <PASS|FAIL|BLOCKED> --outcome <qa_handoff|rework|posted|report_only|blocked> [--posted pr,jira] [--blocked-missing "branch name,PR link"] [--pr <repo>:<id>,...]
    ```
-   Pass `--pr <id>` with the chosen PR whenever the ticket named more than one — the
-   record must carry the PR actually reviewed, not the first one linked. With a single
-   PR it may be omitted.
+   Pass `--pr` with every PR of the review set (`girnarsoft-one-lms:1210,lms-pwa-ui:45`)
+   whenever the reviewer left a reviewable PR out of the run — the record must carry the
+   PRs actually reviewed. Without `--pr` the record covers every reviewable PR linked on
+   the ticket. The size is summed over the `.review/<KEY>/<unit>/` folders.
    `--outcome` is what actually happened in step 6: `qa_handoff` / `rework` when the
    handoff script ran, `posted` when the findings were posted but the ticket was not
    moved (the user declined, or the ticket was not in the review status), `report_only`
    only when posting failed at both places, `blocked` for step-1 blocks.
    `--posted` lists where the findings actually landed (`pr,jira`, or the one that
-   succeeded). The script prints
-   `doc_id=<id> file=<path> url=<ledger> collection=<name>`.
-2. Write it with the **`ArtifactData`** tool — `action: "set"`, and `url`, `collection`,
-   `doc_id`, `file_path` all taken from that output line. (`ArtifactData` is the tool
-   that writes an artifact's database; the `Artifact` tool publishes pages and has no
-   database action. It is pre-approved in this skill's `allowed-tools`, so the write
-   needs no permission prompt and is not judged by the auto-mode classifier — a run
-   that is still refused means the tool is missing from that machine's build or the
-   ledger is not shared with the reviewer's account.)
-3. Tell the user the run is recorded, with the ledger URL. If the write fails, say so,
-   name the reason from the tool's error (permission denied → the tool is not allowed on
-   this machine; not found → the ledger is not shared with this account; quota), and
-   keep `.review/<KEY>-run.json` — it can be written later with the same call.
-4. Remove the review worktree: `git worktree remove --force .review/wt-<KEY>`. The
-   reports, plan, context and run record under `.review/` stay; only the checkout goes.
+   succeeded). The script writes `.review/<KEY>-run.json`, first sends any runs still
+   waiting in `.review/pending/`, then sends this one, and prints
+   `run_id=<id> file=<path> ledger=<url> result=<result> [reason=<why>]`, plus
+   `pending_sent=<n> pending_left=<n>` when the queue was involved.
+2. Tell the user what `result` says — never report a run as recorded unless it says so:
+   - `created` / `replaced` → recorded; give the dashboard address (the `ledger` URL).
+   - `queued` → the ledger could not take it now (`reason`: unreachable — the reviewer is
+     off the office network or the service is down; `HTTP 401` — `LEDGER_TOKEN` missing
+     from `jira.env`; no URL configured). The run waits in `.review/pending/` and is sent
+     automatically with the next run, or now with
+     `python3 ${CLAUDE_SKILL_DIR}/scripts/record_run.py --flush`. Not an error for the review.
+   - `rejected` (exit status 1) → the ledger refused the record as invalid; quote `reason`
+     and keep `.review/<KEY>-run.json`. Retrying the same record will not help; this is a
+     bug to report, not something to work around.
+   A `pending_left` above 0 after a successful send means older runs are still waiting;
+   say so in one line.
+3. Never write the record anywhere else (no artifact, no Jira property, no file outside
+   `.review/`).
+4. Remove every PR's worktree from its own clone:
+   `git -C <clone> worktree remove --force .review/<KEY>/<unit>/wt`. The reports, plan,
+   context, diffs and run record under `.review/` stay; only the checkouts go.
 
-The record carries the ticket (key, type, priority, summary), reviewer, developer, PR,
+The record carries the ticket (key, type, priority, summary), reviewer, developer, every reviewed PR with its repository,
 start/finish/duration, verdict, finding counts, diff size, a size-based complexity score
-and the outcome. Iteration numbers and time-to-PASS are computed by the page from all
+and the outcome. Iteration numbers and time-to-PASS are computed by the ledger from all
 runs on the same key.
 
 ## Failure modes
@@ -612,6 +687,9 @@ runs on the same key.
   T-1..T-13: positional row contract, Mockito spy idioms, …") tells the reviewer
   nothing they can approve or add to. Every check is a table row that says what will be
   looked at, where, and why it matters, in plain language.
+- **Half a ticket.** Reviewing one PR of a change another PR consumes and moving the
+  ticket to QA; or skipping the checks between PRs because each diff looked fine alone.
+  The contract between them is where such changes break.
 - **Missing the missing.** The costliest defects are absent from the diff — the test not
   written, the caller not updated, the migration not made reversible. Scan for absence
   deliberately.

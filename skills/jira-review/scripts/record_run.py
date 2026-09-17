@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Build the tracking record for one jira-review run, ready for the Artifact tool's
-write_db (collection "reviews"). Two modes:
+Build the tracking record for one jira-review run and send it to the review ledger
+service. Three modes:
 
   python3 record_run.py --mark-start KEY
       stamps .review/KEY-started.at with the current UTC time (call right after the
@@ -9,15 +9,30 @@ write_db (collection "reviews"). Two modes:
 
   python3 record_run.py KEY --verdict PASS|FAIL|BLOCKED --outcome OUTCOME
                         [--posted pr,jira] [--blocked-missing "branch name,PR link"]
-                        [--counts B,M,m,W,U] [--ticket-json FILE] [--out FILE]
-      writes .review/KEY-run.json and prints "doc_id=<id> file=<path> url=<ledger> collection=<name>"
+                        [--pr [REPO:]ID,...] [--counts B,M,m,W,U] [--ticket-json FILE] [--out FILE]
+      writes .review/KEY-run.json, sends it with PUT <ledger>/api/v1/runs/<run_id>, and prints
+      "run_id=<id> file=<path> ledger=<url> result=<created|replaced|queued|rejected> [reason=...]"
+
+  python3 record_run.py --flush
+      sends the runs waiting in .review/pending/ and exits
+
+Before sending, runs waiting in .review/pending/ are sent first. A run the ledger cannot take
+right now (unreachable, server error, missing token) is queued there and goes out with the
+next run; a run the ledger refuses as invalid is not queued (exit status 1).
+
+Ledger location: LEDGER_URL from the shell or jira.env (the same file the Jira credentials
+come from: $JIRA_ENV_FILE, <repo>/.claude/jira.env, ~/.claude/jira.env), else
+tracking.ledger_url in jira-project.json, else ledger_url in the skill's tracking.json.
+LEDGER_TOKEN, when the ledger requires one, comes from the shell or jira.env.
 
 Outcome values: qa_handoff | rework | posted | report_only | blocked.
 Verdict and counts default to what .review/KEY-review.md says ("## Verdict: X" and the
 "**B blockers · M major · m minor · W warnings · U unverified**" line). Change size comes
-from .review/meta.txt, stat.txt and files.txt written by collect_diff.sh. The ticket
+from the meta.txt, stat.txt and files.txt collect_diff.sh wrote into each reviewed PR's
+folder, .review/KEY/<repo>-pr<id>/, summed over the PRs of the run (the .review/ root for
+runs made before per-PR folders). The ticket
 itself (type, priority, reviewer, developer, PR) comes from fetch_review_tickets.py
-unless --ticket-json is given. No network beyond that one Jira read.
+unless --ticket-json is given. No network beyond that Jira read and the ledger.
 """
 
 import argparse
@@ -27,10 +42,12 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SKILL_VERSION = "1.0.1"
+SKILL_VERSION = "1.1.0"
 
 
 def utcnow():
@@ -108,22 +125,76 @@ def change_from_review(review_dir):
     return {"files": n_files, "added": added, "removed": removed, "commits": commits, "modules": modules}
 
 
-def change_for_run(review_dir, key, pr_ids):
-    """Diff size for the run. One PR (or none named): the .review/ root written by
-    collect_diff.sh, unless that PR has its own .review/KEY-pr-<id>/ folder. Several PRs:
-    the per-PR folders summed, modules unioned, so the ledger sees the whole change set."""
-    folders = [review_dir / f"{key}-pr-{i}" for i in pr_ids]
-    folders = [f for f in folders if f.is_dir()]
+def pr_folder(review_dir, key, unit):
+    folder = review_dir / key / unit
+    return folder if (folder / "stat.txt").exists() else None
+
+
+def change_for_run(review_dir, key, units):
+    """Diff size for the run: the per-PR folders summed. Modules are prefixed with the PR
+    unit when there are several, so two PRs' "src" never merge into one; with no per-PR
+    folder at all, the .review/ root (runs from before per-PR folders)."""
+    folders = [(u, pr_folder(review_dir, key, u)) for u in dict.fromkeys(units)]
+    folders = [(u, f) for u, f in folders if f]
     if not folders:
         return change_from_review(review_dir)
     total = {"files": 0, "added": 0, "removed": 0, "commits": 0, "modules": set()}
-    for f in folders:
+    for unit, f in folders:
         c = change_from_review(f)
         for k in ("files", "added", "removed", "commits"):
             total[k] += c[k]
-        total["modules"].update(c["modules"])
+        total["modules"].update(f"{unit}/{m}" if len(folders) > 1 else m for m in c["modules"])
     total["modules"] = sorted(total["modules"])
     return total
+
+
+def parse_pr_args(text):
+    """--pr "girnarsoft-one-lms:1210,lms-pwa-ui:45", "lms-pwa-ui-pr45" or "1210"
+    -> [(repo or None, id)]."""
+    out = []
+    for part in (x.strip() for x in (text or "").split(",")):
+        if not part:
+            continue
+        repo, sep, pid = part.rpartition(":")
+        if not sep and "-pr" in part:
+            repo, _, pid = part.rpartition("-pr")
+        if not pid.isdigit():
+            sys.exit(f"error: --pr value '{part}' is not [REPO:]ID or <repo>-pr<id>")
+        out.append((repo or None, int(pid)))
+    return out
+
+
+def reviewed_prs(t, chosen, review_dir, key):
+    """The PRs this run covers. The chosen ones when --pr is given, else every reviewable
+    (open or merged) PR the ticket links. Matched by repository AND number, since a number
+    is only unique within its repository."""
+    units = t.get("ticket_prs")
+    if units is None:  # queue JSON from before PR units
+        host = t.get("pull_requests") or []
+        linked = [p for p in host if p["id"] in (t.get("ticket_pr_ids") or [])]
+        if chosen:
+            by_id = {p["id"]: p for p in linked}
+            linked = [by_id[i] for _, i in chosen if i in by_id]
+        return [dict(p, unit=None, repo=None, slug=None, change=None, developer=None) for p in linked]
+    wanted = chosen or [(u["repo"], u["id"]) for u in units if u.get("reviewable")]
+    out = []
+    for repo, pid in wanted:
+        match = [u for u in units if u["id"] == pid and (repo is None or u["repo"] == repo)]
+        if not match:
+            print(f"warning: --pr {repo + ':' if repo else ''}{pid} is not linked on the ticket; left out of the record",
+                  file=sys.stderr)
+            continue
+        if len(match) > 1:
+            sys.exit(f"error: PR #{pid} is linked from several repositories ({', '.join(u['repo'] for u in match)}) "
+                     f"-- pass --pr <repo>:{pid}")
+        u = match[0]
+        folder = pr_folder(review_dir, key, u["unit"])
+        out.append({"unit": u["unit"], "repo": u["repo"], "slug": u["slug"], "id": pid, "url": u.get("url"),
+                    "title": u.get("title"), "state": u.get("state"), "source": u.get("source"),
+                    "destination": u.get("destination"), "merge_commit": u.get("merge_commit"),
+                    "developer": (u.get("linked_by") or {}).get("display_name"),
+                    "change": change_from_review(folder) if folder else None})
+    return out
 
 
 def complexity(change, issue_type):
@@ -154,14 +225,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("key", nargs="?")
     ap.add_argument("--mark-start", metavar="KEY", help="stamp the start time for KEY and exit")
+    ap.add_argument("--flush", action="store_true", help="send the runs waiting in .review/pending/ and exit")
     ap.add_argument("--verdict", choices=["PASS", "FAIL", "BLOCKED"])
     ap.add_argument("--outcome", choices=["qa_handoff", "rework", "posted", "report_only", "blocked"])
     ap.add_argument("--posted", default="", help="comma list of pr,jira")
     ap.add_argument("--blocked-missing", default="", help='comma list, e.g. "branch name,PR link"')
-    ap.add_argument("--pr", default="", help="id of the PR reviewed in this run -- required when the ticket "
-                    "links more than one PR, so the record names the one the user chose rather than the "
-                    "first linked. Accepts a comma list; sizes are then summed over .review/KEY-pr-<id>/ "
-                    "folders if collect_diff.sh --out wrote them, else read from .review/")
+    ap.add_argument("--pr", default="", help="PR(s) reviewed in this run, comma separated, as REPO:ID, "
+                    "<repo>-pr<id> or a bare ID when unambiguous -- e.g. girnarsoft-one-lms:1210,lms-pwa-ui:45. "
+                    "Required whenever the reviewer left some reviewable PRs of the ticket out of the run. "
+                    "Sizes are summed over the .review/KEY/<repo>-pr<id>/ folders")
     ap.add_argument("--counts", help="B,M,m,W,U overriding the report")
     ap.add_argument("--started", help="ISO time overriding .review/KEY-started.at")
     ap.add_argument("--finished", help="ISO time, default now")
@@ -179,6 +251,12 @@ def main():
         print(f"started {args.mark_start} at {stamp.read_text().strip()}")
         return
 
+    ledger = ledger_target()
+    if args.flush:
+        sent, left = flush_pending(review_dir / "pending", ledger)
+        print(f"ledger={ledger['url'] or '(not configured)'} pending_sent={sent} pending_left={left}")
+        return
+
     key = args.key or sys.exit("error: KEY required (or --mark-start KEY)")
     if not args.verdict or not args.outcome:
         sys.exit("error: --verdict and --outcome are required")
@@ -194,14 +272,11 @@ def main():
         print(f"warning: --verdict {args.verdict} but the report says {report_verdict}", file=sys.stderr)
 
     blocked = args.verdict == "BLOCKED"
-    chosen = [int(x) for x in args.pr.split(",") if x.strip()]
+    chosen = parse_pr_args(args.pr)
+    prs = reviewed_prs(t, chosen, review_dir, key)
     change = {"files": 0, "added": 0, "removed": 0, "commits": 0, "modules": []} if blocked \
-        else change_for_run(review_dir, key, chosen)
-    linked = [p for p in (t.get("pull_requests") or []) if p["id"] in (t.get("ticket_pr_ids") or [])]
-    if chosen:                                   # the user's selection, in the order they chose
-        by_id = {p["id"]: p for p in linked}
-        linked = [by_id[i] for i in chosen if i in by_id]
-    pr = linked[0] if linked else None
+        else change_for_run(review_dir, key, [p["unit"] for p in prs if p.get("unit")])
+    pr = prs[0] if prs else None
     dev = t.get("developer") or {}
     posted = {x.strip() for x in args.posted.split(",") if x.strip()}
 
@@ -210,13 +285,16 @@ def main():
         "type": t.get("type"), "priority": t.get("priority"), "project": data.get("jira_project"),
         "product": data.get("product") or data.get("jira_project"),
         "repo": data.get("repo"), "git_host": data.get("git_host"),
+        "repos": sorted({p["repo"] for p in prs if p.get("repo")}),
         "status_at_start": t.get("status"),
-        "reviewer": (data.get("reviewer") or {}).get("display_name"),
+        "reviewer": (data.get("reviewer") or {}).get("display_name")
+        or os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
         "developer": dev.get("display_name"),
         "branch": pr["source"] if pr and pr.get("source") else (t.get("ticket_branches") or [None])[0],
         "base_branch": t.get("base_branch"),
         "pr_id": pr["id"] if pr else None, "pr_url": pr["url"] if pr else None,
-        "pr_ids": [p["id"] for p in linked], "pr_urls": [p["url"] for p in linked],
+        "pr_ids": [p["id"] for p in prs], "pr_urls": [p["url"] for p in prs],
+        "prs": prs,
         "started_at": iso(started), "finished_at": iso(finished),
         "duration_sec": max(0, int((finished - started).total_seconds())),
         "verdict": args.verdict,
@@ -231,17 +309,49 @@ def main():
         "recorded_at": iso(utcnow()),
         "skill_version": SKILL_VERSION,
     }
-    doc_id = f"{key}-{started.strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = f"{key}-{started.strftime('%Y%m%dT%H%M%SZ')}"
     out = Path(args.out) if args.out else review_dir / f"{key}-run.json"
     out.write_text(json.dumps(record, indent=2) + "\n")
-    tracking = ledger_target()
-    print(f"doc_id={doc_id} file={out} url={tracking.get('artifact_url', '')} collection={tracking.get('collection', 'reviews')}")
+
+    pending = review_dir / "pending"
+    sent, left = flush_pending(pending, ledger)
+    result, reason = deliver(ledger, run_id, record, pending)
+    line = f"run_id={run_id} file={out} ledger={ledger['url'] or '(not configured)'} result={result}"
+    print(line + (f" reason={reason}" if reason else ""))
+    if sent or left or result == "queued":
+        print(f"pending_sent={sent} pending_left={left + (1 if result == 'queued' else 0)}")
+    if result == "rejected":
+        sys.exit(1)
+
+
+def read_env_file_values(names):
+    """LEDGER_* values from jira.env, found the way fetch_review_tickets.py finds it.
+    Variables already set in the shell win."""
+    values = {n: os.environ.get(n, "").strip() for n in names}
+    candidates = [os.environ.get("JIRA_ENV_FILE", "").strip(), str(repo_top() / ".claude" / "jira.env"),
+                  str(Path.home() / ".claude" / "jira.env")]
+    path = next((c for c in candidates if c and os.path.isfile(c)), "")
+    if not path:
+        return values
+    for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if name in values and not values[name]:
+            values[name] = value
+    return values
 
 
 def ledger_target():
-    """Where the record goes: tracking.artifact_url in jira-project.json wins (the repo's
-    .claude/ copy, else the user's ~/.claude/ copy), else the skill's own tracking.json
-    (one ledger shared by every project that installs this plugin)."""
+    """Where the record goes: LEDGER_URL (shell or jira.env) wins, then tracking.ledger_url in
+    jira-project.json (the repo's .claude/ copy, else the user's ~/.claude/ copy), then the
+    skill's own tracking.json (one ledger shared by every project that installs this plugin)."""
+    env = read_env_file_values(["LEDGER_URL", "LEDGER_TOKEN"])
     cfg = {}
     pj = repo_top() / ".claude" / "jira-project.json"
     if not pj.exists():
@@ -253,8 +363,78 @@ def ledger_target():
             cfg = {}
     skill = HERE.parent / "tracking.json"
     base = json.loads(skill.read_text()) if skill.exists() else {}
-    return {"artifact_url": cfg.get("artifact_url") or base.get("artifact_url", ""),
-            "collection": cfg.get("collection") or base.get("collection", "reviews")}
+    url = env["LEDGER_URL"] or cfg.get("ledger_url") or base.get("ledger_url", "")
+    return {"url": url.rstrip("/"), "token": env["LEDGER_TOKEN"]}
+
+
+def put_run(ledger, run_id, record):
+    """PUT one run. Returns (HTTP status or None when unreachable, short reason)."""
+    request = urllib.request.Request(
+        f"{ledger['url']}/api/v1/runs/{run_id}", data=json.dumps(record).encode("utf-8"), method="PUT",
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 **({"Authorization": f"Bearer {ledger['token']}"} if ledger["token"] else {})})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.status, ""
+    except urllib.error.HTTPError as error:
+        try:
+            reply = json.loads(error.read().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            reply = {}
+        details = "; ".join(reply.get("details") or [])
+        return error.code, f"HTTP {error.code} {reply.get('error', '')}{': ' + details if details else ''}".strip()
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        return None, f"unreachable ({getattr(error, 'reason', error)})"
+
+
+def deliver(ledger, run_id, record, pending):
+    """Send one run; queue it in pending/ when the ledger cannot take it now.
+    Returns (created|replaced|queued|rejected, reason)."""
+    if not ledger["url"]:
+        status, reason = None, "no ledger URL configured (LEDGER_URL in jira.env)"
+    else:
+        status, reason = put_run(ledger, run_id, record)
+    if status == 201:
+        (pending / f"{run_id}.json").unlink(missing_ok=True)
+        return "created", ""
+    if status == 200:
+        (pending / f"{run_id}.json").unlink(missing_ok=True)
+        return "replaced", ""
+    if status is not None and 400 <= status < 500 and status not in (401, 403, 404, 408, 429):
+        # The ledger read the record and refused it; sending it again cannot succeed.
+        return "rejected", reason
+    if status == 401:
+        reason += " -- the ledger requires LEDGER_TOKEN in jira.env"
+    pending.mkdir(parents=True, exist_ok=True)
+    (pending / f"{run_id}.json").write_text(json.dumps(record, indent=2) + "\n")
+    return "queued", reason
+
+
+def flush_pending(pending, ledger):
+    """Send every queued run, oldest first. Stops at the first run the ledger cannot take
+    now. Returns (sent, still waiting)."""
+    files = sorted(pending.glob("*.json")) if pending.is_dir() else []
+    if not files or not ledger["url"]:
+        return 0, len(files)
+    sent = 0
+    for path in files:
+        try:
+            record = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            print(f"warning: {path} is not JSON; left in place", file=sys.stderr)
+            continue
+        result, reason = deliver(ledger, path.stem, record, pending)
+        if result in ("created", "replaced"):
+            sent += 1
+        elif result == "rejected":
+            path.rename(path.with_suffix(".rejected"))
+            print(f"warning: ledger refused queued run {path.stem}: {reason}; kept as {path.with_suffix('.rejected')}",
+                  file=sys.stderr)
+        else:
+            print(f"note: ledger still unavailable ({reason}); {path.stem} and later runs stay queued",
+                  file=sys.stderr)
+            break
+    return sent, len(list(pending.glob("*.json")))
 
 
 if __name__ == "__main__":
